@@ -64,17 +64,48 @@ pub struct Usage {
 pub struct StreamEvent {
     #[serde(rename = "type")]
     pub event_type: String,
+    /// Block index (for content_block_start / content_block_delta / content_block_stop)
+    pub index: Option<usize>,
+    /// For content_block_start: the block being opened
+    pub content_block: Option<serde_json::Value>,
     pub delta: Option<Delta>,
     pub message: Option<serde_json::Value>,
-    pub content_block: Option<serde_json::Value>,
 }
 
-/// Delta data
+/// Delta data — covers both text_delta and input_json_delta
 #[derive(Debug, Deserialize)]
 pub struct Delta {
     #[serde(rename = "type")]
     pub delta_type: String,
+    /// Present for text_delta
     pub text: Option<String>,
+    /// Present for input_json_delta (tool use accumulation)
+    pub partial_json: Option<String>,
+    /// Present in message_delta
+    pub stop_reason: Option<String>,
+}
+
+// ─── Tool calling types ────────────────────────────────────────────────────
+
+/// A single tool_use call extracted from the API response.
+#[derive(Debug, Clone)]
+pub struct ToolUseCall {
+    /// The ID that must be echoed back in tool_result
+    pub id: String,
+    pub name: String,
+    /// Accumulated raw JSON string; parse before passing to Tool::execute
+    pub input_json: String,
+}
+
+/// Structured response from call_with_tools — returned by the agent loop.
+#[derive(Debug)]
+pub struct AgentResponse {
+    /// Text content (may be empty when only tool_use blocks are present)
+    pub text: String,
+    /// "end_turn" | "tool_use" | "max_tokens" | "stop_sequence"
+    pub stop_reason: String,
+    /// Tool calls that must be executed before the next API round-trip
+    pub tool_uses: Vec<ToolUseCall>,
 }
 
 /// OpenAI-compatible streaming chunk (for Ollama)

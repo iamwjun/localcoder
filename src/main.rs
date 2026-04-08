@@ -16,8 +16,10 @@
  */
 
 mod api;
+mod engine;
 mod markdown;
 mod repl;
+mod tools;
 mod types;
 
 use anyhow::Result;
@@ -46,16 +48,20 @@ async fn main() -> Result<()> {
         );
     }
 
+    // Register tools
+    let mut registry = tools::ToolRegistry::new();
+    registry.register(tools::EchoTool);
+
     // Get command-line arguments
     let args: Vec<String> = env::args().skip(1).collect();
 
     if args.is_empty() {
         // Interactive REPL mode
-        repl::start_repl(&api_key).await?;
+        repl::start_repl(&api_key, registry).await?;
     } else {
         // Single-shot query mode
         let prompt = args.join(" ");
-        one_shot(&api_key, &prompt).await?;
+        one_shot(&api_key, &prompt, registry).await?;
     }
 
     Ok(())
@@ -70,7 +76,7 @@ fn print_banner() {
 }
 
 /// Single-shot query mode
-async fn one_shot(api_key: &str, prompt: &str) -> Result<()> {
+async fn one_shot(api_key: &str, prompt: &str, registry: tools::ToolRegistry) -> Result<()> {
     println!("{} {}", "💬 User:".green().bold(), prompt);
     println!();
 
@@ -78,7 +84,9 @@ async fn one_shot(api_key: &str, prompt: &str) -> Result<()> {
 
     println!("{}", "🤖 Claude is thinking...\n".yellow());
 
-    match client.query_streaming(prompt, &[]).await {
+    let mut messages = vec![serde_json::json!({"role": "user", "content": prompt})];
+
+    match engine::run_agent_loop(&client, &registry, &mut messages).await {
         Ok(_) => {
             println!("\n");
             println!("{}", "✅ Done".green());

@@ -14,7 +14,7 @@ use crate::types::*;
 use anyhow::{Context, Result};
 use futures::stream::StreamExt;
 use reqwest::Client;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::env;
 use std::io::{self, Write};
 
@@ -293,6 +293,242 @@ impl ClaudeClient {
 
         let api_response: ApiResponse = response.json().await.context("Failed to parse response")?;
         Ok(api_response)
+    }
+
+    // ─── Tool-aware query (S01) ────────────────────────────────────────────
+
+    /// Send a request that may include tool schemas and handle tool_use responses.
+    ///
+    /// For Claude: uses the native /messages endpoint with SSE state machine to
+    /// track tool_use content blocks. Text blocks print in real-time.
+    ///
+    /// For Ollama: tool calling is not supported; returns a text-only AgentResponse.
+    ///
+    /// Corresponds to: src/query.ts — the inner API call inside the agent loop
+    pub async fn call_with_tools(
+        &self,
+        messages: &[Value],
+        tools: &[Value],
+    ) -> Result<AgentResponse> {
+        // Ollama path: no tool calling support — stream text and return
+        if self.api_key.is_none() {
+            return self.call_with_tools_ollama(messages).await;
+        }
+
+        // Claude path: native /messages endpoint
+        let api_key = self.api_key.as_ref().unwrap();
+        let body = if tools.is_empty() {
+            json!({
+                "model": self.model,
+                "max_tokens": self.max_tokens,
+                "messages": messages,
+                "stream": true
+            })
+        } else {
+            json!({
+                "model": self.model,
+                "max_tokens": self.max_tokens,
+                "messages": messages,
+                "tools": tools,
+                "stream": true
+            })
+        };
+
+        let response = self
+            .client
+            .post("https://api.anthropic.com/v1/messages")
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .context("API request failed")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            anyhow::bail!("API returned error {}: {}", status, error_text);
+        }
+
+        // ── SSE state machine ──────────────────────────────────────────────
+        enum BlockState {
+            Text(String),
+            ToolUse {
+                id: String,
+                name: String,
+                input_json: String,
+            },
+        }
+
+        let mut blocks: Vec<BlockState> = Vec::new();
+        let mut stop_reason = String::from("end_turn");
+        let mut stream = response.bytes_stream();
+
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = chunk_result.context("stream read error")?;
+            let text = String::from_utf8_lossy(&chunk);
+
+            for line in text.lines() {
+                let data = match line.strip_prefix("data: ") {
+                    Some(d) => d,
+                    None => continue,
+                };
+                if data == "[DONE]" {
+                    break;
+                }
+
+                let event: StreamEvent = match serde_json::from_str(data) {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+
+                match event.event_type.as_str() {
+                    "content_block_start" => {
+                        if let Some(cb) = &event.content_block {
+                            let block_type = cb["type"].as_str().unwrap_or("");
+                            match block_type {
+                                "tool_use" => {
+                                    let id = cb["id"].as_str().unwrap_or("").to_string();
+                                    let name = cb["name"].as_str().unwrap_or("").to_string();
+                                    blocks.push(BlockState::ToolUse {
+                                        id,
+                                        name,
+                                        input_json: String::new(),
+                                    });
+                                }
+                                _ => {
+                                    blocks.push(BlockState::Text(String::new()));
+                                }
+                            }
+                        }
+                    }
+
+                    "content_block_delta" => {
+                        let idx = event.index.unwrap_or(0);
+                        let delta = match &event.delta {
+                            Some(d) => d,
+                            None => continue,
+                        };
+
+                        if let Some(block) = blocks.get_mut(idx) {
+                            match block {
+                                BlockState::Text(text) => {
+                                    if let Some(fragment) = &delta.text {
+                                        print!("{}", fragment);
+                                        io::stdout().flush().ok();
+                                        text.push_str(fragment);
+                                    }
+                                }
+                                BlockState::ToolUse { input_json, .. } => {
+                                    if let Some(fragment) = &delta.partial_json {
+                                        input_json.push_str(fragment);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    "message_delta" => {
+                        if let Some(delta) = &event.delta {
+                            if let Some(reason) = &delta.stop_reason {
+                                stop_reason = reason.clone();
+                            }
+                        }
+                    }
+
+                    _ => {}
+                }
+            }
+        }
+
+        // ── Assemble AgentResponse ─────────────────────────────────────────
+        let mut text = String::new();
+        let mut tool_uses: Vec<ToolUseCall> = Vec::new();
+
+        for block in blocks {
+            match block {
+                BlockState::Text(t) => {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(&t);
+                }
+                BlockState::ToolUse {
+                    id,
+                    name,
+                    input_json,
+                } => {
+                    tool_uses.push(ToolUseCall {
+                        id,
+                        name,
+                        input_json,
+                    });
+                }
+            }
+        }
+
+        Ok(AgentResponse {
+            text,
+            stop_reason,
+            tool_uses,
+        })
+    }
+
+    /// Ollama fallback for call_with_tools — streams text, no tool calling.
+    async fn call_with_tools_ollama(&self, messages: &[Value]) -> Result<AgentResponse> {
+        let body = json!({
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "messages": messages,
+            "stream": true
+        });
+
+        let response = self
+            .client
+            .post(format!("{}/chat/completions", self.base_url))
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .context("API request failed")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            anyhow::bail!("API returned error {}: {}", status, error_text);
+        }
+
+        let mut full_response = String::new();
+        let mut stream = response.bytes_stream();
+
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = chunk_result.context("stream read error")?;
+            let text = String::from_utf8_lossy(&chunk);
+
+            for line in text.lines() {
+                if let Some(data) = line.strip_prefix("data: ") {
+                    if data == "[DONE]" {
+                        break;
+                    }
+                    if let Ok(chunk) = serde_json::from_str::<OpenAIStreamChunk>(data) {
+                        for choice in chunk.choices {
+                            if let Some(content) = choice.delta.content {
+                                print!("{}", content);
+                                io::stdout().flush().ok();
+                                full_response.push_str(&content);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(AgentResponse {
+            text: full_response,
+            stop_reason: "end_turn".to_string(),
+            tool_uses: vec![],
+        })
     }
 
     /// Set model

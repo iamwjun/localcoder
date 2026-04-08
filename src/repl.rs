@@ -10,23 +10,29 @@
  */
 
 use crate::api::ClaudeClient;
+use crate::engine;
+use crate::tools::ToolRegistry;
 use crate::types::ConversationHistory;
 use anyhow::Result;
 use colored::*;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
+use serde_json::{json, Value};
 use std::env;
 
 /// Start the REPL interactive interface
-pub async fn start_repl(api_key: &str) -> Result<()> {
+pub async fn start_repl(api_key: &str, registry: ToolRegistry) -> Result<()> {
     // Print usage instructions
     print_instructions(api_key);
 
     // Create API client
     let client = ClaudeClient::new(api_key)?;
 
-    // Create conversation history
-    let mut history = ConversationHistory::new();
+    // Conversation history as Vec<Value> (supports array content for tool calls)
+    let mut messages: Vec<Value> = Vec::new();
+
+    // Legacy text-only history for /history command display
+    let mut display_history = ConversationHistory::new();
 
     // Create readline editor
     let mut rl = DefaultEditor::new()?;
@@ -50,24 +56,37 @@ pub async fn start_repl(api_key: &str) -> Result<()> {
 
                 // Handle commands
                 if input.starts_with('/') {
-                    if handle_command(input, &mut history).await {
+                    if handle_command(input, &mut display_history).await {
                         break; // Exit
                     }
                     continue;
                 }
 
-                // Send message to Claude
-                if let Err(e) = send_message(&client, input, &mut history).await {
-                    eprintln!("\n{} {}", "❌ Error:".red().bold(), e);
+                // Append user message to conversation
+                messages.push(json!({"role": "user", "content": input}));
+                display_history.add_user_message(input);
+
+                println!("\n{}", "🤖 Claude is thinking...\n".yellow());
+
+                // Run agent loop (handles tool calls internally)
+                match engine::run_agent_loop(&client, &registry, &mut messages).await {
+                    Ok(response) => {
+                        display_history.add_assistant_message(&response);
+                        println!();
+                    }
+                    Err(e) => {
+                        eprintln!("\n{} {}", "❌ Error:".red().bold(), e);
+                        // Pop the user message we just added to keep history consistent
+                        messages.pop();
+                        display_history.clear(); // rebuild from scratch on error
+                    }
                 }
             }
             Err(ReadlineError::Interrupted) => {
-                // Ctrl+C
                 println!("\n{}", "Use /exit or /quit to exit".yellow());
                 continue;
             }
             Err(ReadlineError::Eof) => {
-                // Ctrl+D
                 println!("\n{}", "👋 Goodbye!".cyan());
                 break;
             }
@@ -106,27 +125,6 @@ fn print_instructions(api_key: &str) {
         println!("{} {}", "🔑 API Key:".cyan().bold(), masked_key.white());
     }
     println!();
-}
-
-/// Send message to Claude
-async fn send_message(
-    client: &ClaudeClient,
-    input: &str,
-    history: &mut ConversationHistory,
-) -> Result<()> {
-    // Add user message to history
-    history.add_user_message(input);
-
-    println!("\n{}", "🤖 Claude is thinking...\n".yellow());
-
-    // Call API (streaming response)
-    let response = client.query_streaming(input, history.get_messages()).await?;
-
-    // Add assistant response to history
-    history.add_assistant_message(&response);
-
-    println!(); // New line
-    Ok(())
 }
 
 /// Handle commands
