@@ -79,5 +79,7 @@ echo "   Marker:  $LAST_COMMIT → $LATEST_SHA"
 
 # --- Commit and push ---
 git add "$CHANGELOG" "$CARGO"
+cargo build --release
+git add .
 git commit -S -m "update CHANGELOG.md"
 echo "🚀 update CHANGELOG.md"
