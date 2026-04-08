@@ -51,6 +51,9 @@ async fn main() -> Result<()> {
     // Register tools
     let mut registry = tools::ToolRegistry::new();
     registry.register(tools::EchoTool);
+    registry.register(tools::ReadTool);
+    registry.register(tools::EditTool);
+    registry.register(tools::WriteTool);
 
     // Get command-line arguments
     let args: Vec<String> = env::args().skip(1).collect();
