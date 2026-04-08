@@ -1,6 +1,14 @@
 # Changelog
 
-<!-- last-commit: 6a6ce1a -->
+<!-- last-commit: 3377ed2 -->
+
+## v0.1.2 - 2026-04-08
+
+| Commit | Description |
+|--------|-------------|
+| `3377ed2` | chore: optimize changelog bash |
+| `d310d1b` | update CHANGELOG.md |
+
 
 ## v0.1.1 - 2026-04-08
 
