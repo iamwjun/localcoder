@@ -1,33 +1,35 @@
 # Localcoder
 
-## 📖 简介
+Chinese version: [README.zh.md](./README.zh.md)
 
-Localcoder 是一个基于 Rust 实现的 Claude-like 命令行 AI 助手，提供：
+## 📖 Overview
 
-- ✅ 基于 Ollama 的本地 LLM 调用
-- ✅ 交互式 REPL 界面
-- ✅ 文件操作工具（Read / Edit / Write）
-- ✅ 轻量级（启动快、内存占用低）
+Localcoder is a Claude-like command-line AI assistant implemented in Rust. It provides:
 
-> 相比 JavaScript 版本，Rust 版本启动时间快 **10 倍**，内存占用少 **10 倍**。
+- ✅ Local LLM calls via Ollama
+- ✅ Interactive REPL interface
+- ✅ File operation tools (`Read` / `Edit` / `Write`)
+- ✅ Lightweight runtime with fast startup and low memory usage
+
+> Compared with the JavaScript version, the Rust version starts about **10x faster** and uses about **10x less** memory.
 
 ---
 
-## 🚀 快速开始
+## 🚀 Quick Start
 
-### 1. 安装二进制
+### 1. Install the Binary
 
-**方法一：使用官方安装脚本**
+**Option 1: Use the install script**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/iamwjun/localcoder/main/install.sh | bash
 ```
 
-支持平台：
+Supported platforms:
 - macOS (arm64 / x86_64)
 - Linux (x86_64 / aarch64)
 
-**方法二：手动编译**
+**Option 2: Build from source**
 
 ```bash
 git clone https://github.com/iamwjun/localcoder.git
@@ -37,9 +39,9 @@ cargo build --release
 
 ---
 
-### 2. 启动 Ollama
+### 2. Start Ollama
 
-确保本地 Ollama 服务已经启动，并且至少拉取了一个模型：
+Make sure your local Ollama service is running and that at least one model has been pulled:
 
 ```bash
 ollama serve
@@ -48,20 +50,20 @@ ollama pull qwen3.5:4b
 
 ---
 
-### 3. 首次运行
+### 3. First Run
 
 ```bash
-# REPL 交互模式
+# Start the interactive REPL
 localcoder
 ```
 
-程序启动时会自动检查配置文件：
+On startup, Localcoder automatically checks for a settings file:
 
-- 优先读取当前目录的 `.localcoder/settings.json`
-- 如果当前目录没有，则读取 `$HOME/.localcoder/settings.json`
-- 如果两处都没有，则在当前目录自动创建默认配置
+- It first looks for `.localcoder/settings.json` in the current directory
+- If that file does not exist, it falls back to `$HOME/.localcoder/settings.json`
+- If neither exists, it creates a default config in the current directory
 
-默认配置格式如下：
+The default config format is:
 
 ```json
 {
@@ -72,123 +74,124 @@ localcoder
 }
 ```
 
-你也可以手动编辑这个文件，或在 REPL 中使用 `/model` 指令切换模型。
+You can edit this file manually, or switch models from the REPL with the `/model` command.
 
 ---
 
-### 4. 运行
+### 4. Run
 
 ```bash
-# REPL 交互模式
+# Interactive REPL mode
 localcoder
 
-# 单次查询（快速测试）
-localcoder -- "你好，介绍一下你自己"
+# One-shot query
+localcoder -- "Hello, introduce yourself"
 ```
 
 ---
 
-## 🛠️ 文件操作命令
+## 🛠️ File Operations
 
-本地 Ollama 模式下，你可以直接使用工具操作文件：
+In Ollama mode, you can directly use built-in tools to work with files:
 
 ```bash
-localcoder -- "读取 /etc/hosts 的前 5 行"
-localcoder -- "在 /tmp/test.txt 中写入'hello world'"
-localcoder -- "把 'hello' 替换成 'world'"
+localcoder -- "Read the first 5 lines of /etc/hosts"
+localcoder -- "Write 'hello world' into /tmp/test.txt"
+localcoder -- "Replace 'hello' with 'world'"
 ```
 
 ---
 
-## 📝 REPL 命令
+## 📝 REPL Commands
 
-| 命令 | 描述 |
+| Command | Description |
 |------|------|
-| `/help` | 显示可用命令列表 |
-| `/clear` | 清空对话历史 |
-| `/history` | 查看对话历史（JSON 格式） |
-| `/model` | 从 `/api/tags` 获取模型列表并切换当前模型，同时更新 `$HOME/.localcoder/settings.json` |
-| `/count` | 显示消息数量 |
-| `/version` | 显示当前版本 |
-| `/exit` | 退出 REPL |
+| `/help` | Show the available commands |
+| `/clear` | Clear conversation history |
+| `/history` | Show conversation history in JSON format |
+| `/model` | Fetch models from `/api/tags`, switch the active model, and update `$HOME/.localcoder/settings.json` |
+| `/count` | Show the message count |
+| `/version` | Show the current version |
+| `/exit` | Exit the REPL |
 
 ---
 
-## 📦 项目结构
+## 📦 Project Structure
 
-```
+```text
 localcoder/
-├── install.sh           # 安装脚本（自动检测平台）
-├── Cargo.toml           # Rust 项目配置
-├── CHANGELOG.md         # 版本变更日志
-├── README.md            # 本文档
-├── docs/                # 设计文档
-│   ├── S00-basic-chat.md      # 基础聊天实现
-│   ├── S01-tool-system.md     # 工具系统架构
-│   └── S02-file-tools.md      # 文件操作工具
-├── examples/            # 示例代码
-│   ├── basic.rs          # 基本 API 调用
-│   ├── streaming.rs      # 流式响应
-│   ├── conversation.rs   # 多轮对话
-│   ├── custom_model.rs   # 自定义模型参数
-│   └── error_handling.rs # 错误处理
-└── src/                 # 源代码
-    ├── main.rs           # 程序入口
-    ├── api.rs            # Ollama 客户端与配置管理
-    ├── types.rs          # 类型定义
-    ├── engine.rs         # Agent 循环
-    └── repl.rs           # REPL 界面
+├── install.sh           # Install script with platform detection
+├── Cargo.toml           # Rust project manifest
+├── CHANGELOG.md         # Release notes
+├── README.md            # English documentation
+├── README.zh.md         # Chinese documentation
+├── docs/                # Design notes
+│   ├── S00-basic-chat.md      # Basic chat implementation
+│   ├── S01-tool-system.md     # Tool system architecture
+│   └── S02-file-tools.md      # File operation tools
+├── examples/            # Example programs
+│   ├── basic.rs          # Basic API usage
+│   ├── streaming.rs      # Streaming responses
+│   ├── conversation.rs   # Multi-turn conversation
+│   ├── custom_model.rs   # Custom model parameters
+│   └── error_handling.rs # Error handling
+└── src/                 # Source code
+    ├── main.rs           # Program entry point
+    ├── api.rs            # Ollama client and config management
+    ├── types.rs          # Shared types
+    ├── engine.rs         # Agent loop
+    └── repl.rs           # REPL interface
 ```
 
 ---
 
-## 📋 技术栈
+## 📋 Tech Stack
 
-| 组件 | 技术选型 |
+| Component | Selection |
 |------|----------|
-| 异步运行时 | tokio 1.40 |
-| HTTP 客户端 | reqwest 0.12 |
-| JSON 处理 | serde + serde_json 1.0 |
-| 命令行编辑 | rustyline 14.0 |
-| 错误处理 | anyhow + thiserror |
-| 终端彩色 | colored 2.1 |
-| 流式处理 | futures 0.3 |
+| Async runtime | tokio 1.40 |
+| HTTP client | reqwest 0.12 |
+| JSON handling | serde + serde_json 1.0 |
+| Line editing | rustyline 14.0 |
+| Error handling | anyhow + thiserror |
+| Terminal colors | colored 2.1 |
+| Streaming utilities | futures 0.3 |
 
 ---
 
-## 📈 性能对比
+## 📈 Performance
 
-| 指标 | JavaScript | Rust | 提升 |
+| Metric | JavaScript | Rust | Improvement |
 |------|------------|------|------|
-| 启动时间 | ~100ms | ~10ms | **10x** |
-| 内存占用 | ~50MB | ~5MB | **10x** |
-| 二进制大小 | N/A | 5-8MB | 独立部署 |
+| Startup time | ~100ms | ~10ms | **10x** |
+| Memory usage | ~50MB | ~5MB | **10x** |
+| Binary size | N/A | 5-8MB | Standalone deployment |
 
 ---
 
-## 📚 学习价值
+## 📚 What You Can Learn
 
-通过这个项目，你可以学到：
+This project is useful for learning:
 
-1. **Rust 异步编程** - tokio 运行时、async/await、Stream 处理
-2. **HTTP 客户端** - reqwest、JSON API 调用
-3. **系统编程** - 错误处理、所有权、类型安全
-4. **CLI 开发** - rustyline REPL、命令行参数
-5. **Ollama 集成** - `/api/chat`、`/api/tags`、模型配置管理
+1. **Async Rust**: tokio, async/await, and stream handling
+2. **HTTP clients**: reqwest and JSON-based APIs
+3. **Systems programming**: error handling, ownership, and type safety
+4. **CLI development**: rustyline REPL and command-line workflows
+5. **Ollama integration**: `/api/chat`, `/api/tags`, and model configuration management
 
 ---
 
-## 🤖 后续扩展方向
+## 🤖 Possible Extensions
 
-可以基于此项目继续扩展：
+You can continue extending this project with:
 
-- 工具系统（Bash、Web 抓取等）
-- 权限管理与沙箱
-- 上下文压缩
-- 子代理协作
-- MCP 集成
-- GUI 界面（egui/iced）
-- WebAssembly（浏览器运行）
+- More tools such as Bash execution or web fetching
+- Permission management and sandboxing
+- Context compression
+- Multi-agent collaboration
+- MCP integration
+- GUI frontends with `egui` or `iced`
+- WebAssembly support for running in the browser
 
 ---
 
