@@ -1,10 +1,10 @@
 /*!
- * Claude Code Rust Implementation
+ * Localcoder Rust Implementation
  *
  * Based on Claude Code v2.1.88 source analysis
  *
  * Core features:
- * 1. Connect to Claude API
+ * 1. Connect to Ollama
  * 2. Streaming response handling
  * 3. Conversation history management
  * 4. REPL interactive interface
@@ -31,22 +31,12 @@ async fn main() -> Result<()> {
     // Load environment variables
     dotenv::dotenv().ok();
 
+    api::LLMClient::ensure_settings_file()?;
+
     // Print welcome banner
     print_banner();
 
-    // Get API Key (optional for Ollama)
-    let api_key = env::var("ANTHROPIC_AUTH_TOKEN").unwrap_or_default();
-
-    // Check if using Ollama
-    let use_ollama = api_key.is_empty() || env::var("USE_OLLAMA").is_ok();
-
-    if use_ollama {
-        println!(
-            "{} {}",
-            "🦙 Using Ollama:".green().bold(),
-            "Local model at http://localhost:11434"
-        );
-    }
+    println!("{}", "🦙 Using Ollama".green().bold());
 
     // Register tools
     let mut registry = tools::ToolRegistry::new();
@@ -60,11 +50,11 @@ async fn main() -> Result<()> {
 
     if args.is_empty() {
         // Interactive REPL mode
-        repl::start_repl(&api_key, registry).await?;
+        repl::start_repl(registry).await?;
     } else {
         // Single-shot query mode
         let prompt = args.join(" ");
-        one_shot(&api_key, &prompt, registry).await?;
+        one_shot(&prompt, registry).await?;
     }
 
     Ok(())
@@ -72,20 +62,29 @@ async fn main() -> Result<()> {
 
 /// Print welcome banner
 fn print_banner() {
-    println!("{}", "╔════════════════════════════════════════════════════════════╗".cyan());
-    println!("{}", "║      Claude Code Minimal Version (Rust) - CLI Interface    ║".cyan());
-    println!("{}", "╚════════════════════════════════════════════════════════════╝".cyan());
+    println!(
+        "{}",
+        "╔════════════════════════════════════════════════════════════╗".cyan()
+    );
+    println!(
+        "{}",
+        "║         Localcoder Minimal Version (Rust) - CLI Interface   ║".cyan()
+    );
+    println!(
+        "{}",
+        "╚════════════════════════════════════════════════════════════╝".cyan()
+    );
     println!();
 }
 
 /// Single-shot query mode
-async fn one_shot(api_key: &str, prompt: &str, registry: tools::ToolRegistry) -> Result<()> {
+async fn one_shot(prompt: &str, registry: tools::ToolRegistry) -> Result<()> {
     println!("{} {}", "💬 User:".green().bold(), prompt);
     println!();
 
-    let client = api::ClaudeClient::new(api_key)?;
+    let client = api::LLMClient::new()?;
 
-    println!("{}", "🤖 Claude is thinking...\n".yellow());
+    println!("{}", "🤖 Model is thinking...\n".yellow());
 
     let mut messages = vec![serde_json::json!({"role": "user", "content": prompt})];
 

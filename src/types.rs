@@ -5,13 +5,14 @@
  */
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// Message structure
 ///
 /// Corresponds to: src/types/message.ts:38-40
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
-    pub role: String,    // "user" or "assistant"
+    pub role: String, // "user" or "assistant"
     pub content: String,
 }
 
@@ -32,69 +33,13 @@ impl Message {
     }
 }
 
-/// API response structure
-#[derive(Debug, Deserialize)]
-pub struct ApiResponse {
-    pub id: String,
-    pub model: String,
-    pub role: String,
-    pub content: Vec<ContentBlock>,
-    pub usage: Usage,
-}
-
-/// Content block
-#[derive(Debug, Deserialize)]
-pub struct ContentBlock {
-    #[serde(rename = "type")]
-    pub block_type: String,
-    pub text: Option<String>,
-}
-
-/// Token usage
-#[derive(Debug, Deserialize)]
-pub struct Usage {
-    pub input_tokens: u32,
-    pub output_tokens: u32,
-}
-
-/// Streaming event
-///
-/// Corresponds to streaming response handling logic
-#[derive(Debug, Deserialize)]
-pub struct StreamEvent {
-    #[serde(rename = "type")]
-    pub event_type: String,
-    /// Block index (for content_block_start / content_block_delta / content_block_stop)
-    pub index: Option<usize>,
-    /// For content_block_start: the block being opened
-    pub content_block: Option<serde_json::Value>,
-    pub delta: Option<Delta>,
-    pub message: Option<serde_json::Value>,
-}
-
-/// Delta data — covers both text_delta and input_json_delta
-#[derive(Debug, Deserialize)]
-pub struct Delta {
-    #[serde(rename = "type")]
-    pub delta_type: String,
-    /// Present for text_delta
-    pub text: Option<String>,
-    /// Present for input_json_delta (tool use accumulation)
-    pub partial_json: Option<String>,
-    /// Present in message_delta
-    pub stop_reason: Option<String>,
-}
-
 // ─── Tool calling types ────────────────────────────────────────────────────
 
-/// A single tool_use call extracted from the API response.
+/// A single tool call extracted from the Ollama response.
 #[derive(Debug, Clone)]
 pub struct ToolUseCall {
-    /// The ID that must be echoed back in tool_result
-    pub id: String,
     pub name: String,
-    /// Accumulated raw JSON string; parse before passing to Tool::execute
-    pub input_json: String,
+    pub arguments: Value,
 }
 
 /// Structured response from call_with_tools — returned by the agent loop.
@@ -102,29 +47,34 @@ pub struct ToolUseCall {
 pub struct AgentResponse {
     /// Text content (may be empty when only tool_use blocks are present)
     pub text: String,
-    /// "end_turn" | "tool_use" | "max_tokens" | "stop_sequence"
+    /// "end_turn" or "tool_use"
     pub stop_reason: String,
     /// Tool calls that must be executed before the next API round-trip
     pub tool_uses: Vec<ToolUseCall>,
 }
 
-/// OpenAI-compatible streaming chunk (for Ollama)
+/// Native Ollama chat response.
 #[derive(Debug, Deserialize)]
-pub struct OpenAIStreamChunk {
-    pub choices: Vec<OpenAIChoice>,
+pub struct OllamaChatResponse {
+    pub message: OllamaMessage,
 }
 
-/// OpenAI choice
 #[derive(Debug, Deserialize)]
-pub struct OpenAIChoice {
-    pub delta: OpenAIDelta,
-    pub finish_reason: Option<String>,
-}
-
-/// OpenAI delta
-#[derive(Debug, Deserialize)]
-pub struct OpenAIDelta {
+pub struct OllamaMessage {
+    pub role: String,
     pub content: Option<String>,
+    pub tool_calls: Option<Vec<OllamaToolCall>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OllamaToolCall {
+    pub function: OllamaFunctionCall,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OllamaFunctionCall {
+    pub name: String,
+    pub arguments: Value,
 }
 
 /// Conversation history manager

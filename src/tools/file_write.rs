@@ -8,8 +8,8 @@
  */
 
 use crate::tools::Tool;
-use anyhow::{anyhow, Result};
-use serde_json::{json, Value};
+use anyhow::{Result, anyhow};
+use serde_json::{Value, json};
 use std::fs;
 use std::path::Path;
 
@@ -57,7 +57,11 @@ impl Tool for WriteTool {
         if let Some(parent) = path.parent() {
             if !parent.exists() {
                 fs::create_dir_all(parent).map_err(|e| {
-                    anyhow!("Write: cannot create directories for '{}': {}", file_path, e)
+                    anyhow!(
+                        "Write: cannot create directories for '{}': {}",
+                        file_path,
+                        e
+                    )
                 })?;
             }
         }

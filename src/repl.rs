@@ -9,24 +9,20 @@
  * - Command handling
  */
 
-use crate::api::ClaudeClient;
+use crate::api::LLMClient;
 use crate::engine;
 use crate::tools::ToolRegistry;
 use crate::types::ConversationHistory;
 use anyhow::Result;
 use colored::*;
-use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
-use serde_json::{json, Value};
-use std::env;
-
+use rustyline::error::ReadlineError;
+use serde_json::{Value, json};
 /// Start the REPL interactive interface
-pub async fn start_repl(api_key: &str, registry: ToolRegistry) -> Result<()> {
+pub async fn start_repl(registry: ToolRegistry) -> Result<()> {
     // Print usage instructions
-    print_instructions(api_key);
-
-    // Create API client
-    let client = ClaudeClient::new(api_key)?;
+    let client = LLMClient::new()?;
+    print_instructions(&client);
 
     // Conversation history as Vec<Value> (supports array content for tool calls)
     let mut messages: Vec<Value> = Vec::new();
@@ -66,7 +62,7 @@ pub async fn start_repl(api_key: &str, registry: ToolRegistry) -> Result<()> {
                 messages.push(json!({"role": "user", "content": input}));
                 display_history.add_user_message(input);
 
-                println!("\n{}", "🤖 Claude is thinking...\n".yellow());
+                println!("\n{}", "🤖 Model is thinking...\n".yellow());
 
                 // Run agent loop (handles tool calls internally)
                 match engine::run_agent_loop(&client, &registry, &mut messages).await {
@@ -101,29 +97,31 @@ pub async fn start_repl(api_key: &str, registry: ToolRegistry) -> Result<()> {
 }
 
 /// Print usage instructions
-fn print_instructions(api_key: &str) {
+fn print_instructions(client: &LLMClient) {
     println!("{}", "📝 Instructions:".cyan().bold());
     println!("  - Type a message and press Enter to send");
-    println!("  - Type {} or {} to exit", "/exit".yellow(), "/quit".yellow());
-    println!("  - Type {} to clear conversation history", "/clear".yellow());
-    println!("  - Type {} to view conversation history", "/history".yellow());
+    println!(
+        "  - Type {} or {} to exit",
+        "/exit".yellow(),
+        "/quit".yellow()
+    );
+    println!(
+        "  - Type {} to clear conversation history",
+        "/clear".yellow()
+    );
+    println!(
+        "  - Type {} to view conversation history",
+        "/history".yellow()
+    );
     println!("  - Type {} to show help", "/help".yellow());
     println!();
 
-    // Show model info
-    if api_key.is_empty() || env::var("USE_OLLAMA").is_ok() {
-        println!("{} {} (Ollama)", "🔧 Model:".cyan().bold(), "qwen2.5-coder:7b".white());
-        println!("{} {}", "🌐 Endpoint:".cyan().bold(), "http://localhost:11434".white());
-    } else {
-        let model = env::var("CLAUDE_MODEL").unwrap_or_else(|_| "claude-4.5-sonnet".to_string());
-        println!("{} {}", "🔧 Model:".cyan().bold(), model.white());
-        let masked_key = if api_key.len() > 8 {
-            format!("{}...", &api_key[..8])
-        } else {
-            "***".to_string()
-        };
-        println!("{} {}", "🔑 API Key:".cyan().bold(), masked_key.white());
-    }
+    println!("{} {}", "🔧 Model:".cyan().bold(), client.model().white());
+    println!(
+        "{} {}",
+        "🌐 Endpoint:".cyan().bold(),
+        client.base_url().white()
+    );
     println!();
 }
 
@@ -158,11 +156,7 @@ async fn handle_command(command: &str, history: &mut ConversationHistory) -> boo
         }
 
         "/count" => {
-            println!(
-                "\n{} {}",
-                "📊 Message count:".cyan().bold(),
-                history.len()
-            );
+            println!("\n{} {}", "📊 Message count:".cyan().bold(), history.len());
         }
 
         "/version" => {
@@ -187,8 +181,14 @@ fn print_help() {
     println!("\n{}", "📖 Available commands:".cyan().bold());
     println!();
     println!("  {}          - Exit the program", "/exit, /quit".yellow());
-    println!("  {}            - Clear conversation history", "/clear".yellow());
-    println!("  {}          - View conversation history (JSON format)", "/history".yellow());
+    println!(
+        "  {}            - Clear conversation history",
+        "/clear".yellow()
+    );
+    println!(
+        "  {}          - View conversation history (JSON format)",
+        "/history".yellow()
+    );
     println!("  {}             - Show this help", "/help".yellow());
     println!("  {}            - Show message count", "/count".yellow());
     println!("  {}          - Show current version", "/version".yellow());
