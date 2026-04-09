@@ -1,6 +1,16 @@
 # Changelog
 
-<!-- last-commit: 3377ed2 -->
+<!-- last-commit: 4fa1c6d -->
+
+## v0.1.3 - 2026-04-09
+
+| Commit | Description |
+|--------|-------------|
+| `4fa1c6d` | feat: support switch model |
+| `733f5f9` | feat: get config from settings.json |
+| `a402db9` | docs: update README.md |
+| `fdc6b10` | update CHANGELOG.md |
+
 
 ## v0.1.2 - 2026-04-08
 
