@@ -4,7 +4,7 @@
 
 Localcoder 是一个基于 Rust 实现的 Claude-like 命令行 AI 助手，提供：
 
-- ✅ 流式/非流式 Claude API 调用
+- ✅ 基于 Ollama 的本地 LLM 调用
 - ✅ 交互式 REPL 界面
 - ✅ 文件操作工具（Read / Edit / Write）
 - ✅ 轻量级（启动快、内存占用低）
@@ -37,21 +37,46 @@ cargo build --release
 
 ---
 
-### 2. 配置环境变量
+### 2. 启动 Ollama
+
+确保本地 Ollama 服务已经启动，并且至少拉取了一个模型：
 
 ```bash
-# 使用 Claude API（需要 API Key）
-export ANTHROPIC_AUTH_TOKEN=sk-ant-your-token-here
-
-# 或改用本地 Ollama LLM
-export USE_OLLAMA=1
-export OLLAMA_BASE_URL=http://localhost:11434
-export OLLAMA_MODEL=llama3.3
+ollama serve
+ollama pull qwen3.5:4b
 ```
 
 ---
 
-### 3. 运行
+### 3. 首次运行
+
+```bash
+# REPL 交互模式
+localcoder
+```
+
+程序启动时会自动检查配置文件：
+
+- 优先读取当前目录的 `.localcoder/settings.json`
+- 如果当前目录没有，则读取 `$HOME/.localcoder/settings.json`
+- 如果两处都没有，则在当前目录自动创建默认配置
+
+默认配置格式如下：
+
+```json
+{
+  "ollama": {
+    "url": "http://localhost:11434",
+    "model": "qwen3.5:4b"
+  }
+}
+```
+
+你也可以手动编辑这个文件，或在 REPL 中使用 `/model` 指令切换模型。
+
+---
+
+### 4. 运行
 
 ```bash
 # REPL 交互模式
@@ -82,7 +107,9 @@ localcoder -- "把 'hello' 替换成 'world'"
 | `/help` | 显示可用命令列表 |
 | `/clear` | 清空对话历史 |
 | `/history` | 查看对话历史（JSON 格式） |
+| `/model` | 从 `/api/tags` 获取模型列表并切换当前模型，同时更新 `$HOME/.localcoder/settings.json` |
 | `/count` | 显示消息数量 |
+| `/version` | 显示当前版本 |
 | `/exit` | 退出 REPL |
 
 ---
@@ -107,7 +134,7 @@ localcoder/
 │   └── error_handling.rs # 错误处理
 └── src/                 # 源代码
     ├── main.rs           # 程序入口
-    ├── api.rs            # API 客户端
+    ├── api.rs            # Ollama 客户端与配置管理
     ├── types.rs          # 类型定义
     ├── engine.rs         # Agent 循环
     └── repl.rs           # REPL 界面
@@ -144,10 +171,10 @@ localcoder/
 通过这个项目，你可以学到：
 
 1. **Rust 异步编程** - tokio 运行时、async/await、Stream 处理
-2. **HTTP 客户端** - reqwest、Server-Sent Events (SSE)
+2. **HTTP 客户端** - reqwest、JSON API 调用
 3. **系统编程** - 错误处理、所有权、类型安全
 4. **CLI 开发** - rustyline REPL、命令行参数
-5. **Claude API** - 消息格式、流式响应、上下文管理
+5. **Ollama 集成** - `/api/chat`、`/api/tags`、模型配置管理
 
 ---
 

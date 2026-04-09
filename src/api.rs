@@ -7,7 +7,7 @@
 use crate::types::{AgentResponse, OllamaChatResponse, ToolUseCall};
 use anyhow::{Context, Result, anyhow};
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::env;
 use std::fs;
@@ -23,6 +23,27 @@ struct LLMSettings {
 
 #[derive(Debug, Clone, Deserialize)]
 struct OllamaSettings {
+    url: String,
+    model: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaTagsResponse {
+    models: Vec<OllamaTagModel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaTagModel {
+    name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedSettings {
+    ollama: PersistedOllamaSettings,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedOllamaSettings {
     url: String,
     model: String,
 }
@@ -47,6 +68,11 @@ impl LLMClient {
         let cwd = env::current_dir().context("failed to resolve current working directory")?;
         let home = env::var_os("HOME").map(PathBuf::from);
         Self::ensure_settings_file_with(&cwd, home.as_deref())
+    }
+
+    pub fn home_settings_path() -> Result<PathBuf> {
+        let home = env::var_os("HOME").context("$HOME is not set")?;
+        Ok(PathBuf::from(home).join(".localcoder/settings.json"))
     }
 
     fn from_settings(settings: LLMSettings) -> Self {
@@ -227,6 +253,83 @@ impl LLMClient {
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
+
+    pub async fn list_models(&self) -> Result<Vec<String>> {
+        let response = self
+            .client
+            .get(format!("{}/api/tags", self.base_url))
+            .send()
+            .await
+            .context("failed to fetch Ollama model tags")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            anyhow::bail!("Ollama returned error {}: {}", status, error_text);
+        }
+
+        let response: OllamaTagsResponse = response
+            .json()
+            .await
+            .context("failed to parse Ollama tag response")?;
+
+        let mut models = response
+            .models
+            .into_iter()
+            .map(|model| model.name)
+            .collect::<Vec<_>>();
+        models.sort();
+        models.dedup();
+        Ok(models)
+    }
+
+    pub fn persist_model_to_home(&self, model: &str) -> Result<PathBuf> {
+        let home_path = Self::home_settings_path()?;
+        Self::persist_model_to_path(&home_path, &self.base_url, model)?;
+        Ok(home_path)
+    }
+
+    fn persist_model_to_path(path: &Path, base_url: &str, model: &str) -> Result<()> {
+        let model = model.trim();
+        if model.is_empty() {
+            return Err(anyhow!("model must not be empty"));
+        }
+
+        let settings = if path.exists() {
+            let raw = fs::read_to_string(path)
+                .with_context(|| format!("failed to read settings file: {}", path.display()))?;
+            let mut settings: PersistedSettings = serde_json::from_str(&raw)
+                .with_context(|| format!("invalid settings JSON: {}", path.display()))?;
+            settings.ollama.model = model.to_string();
+            if settings.ollama.url.trim().is_empty() {
+                settings.ollama.url = base_url.to_string();
+            }
+            settings
+        } else {
+            PersistedSettings {
+                ollama: PersistedOllamaSettings {
+                    url: base_url.to_string(),
+                    model: model.to_string(),
+                },
+            }
+        };
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "failed to create settings directory: {}",
+                    parent.display()
+                )
+            })?;
+        }
+
+        let raw = serde_json::to_string_pretty(&settings)
+            .context("failed to serialize updated settings")?;
+        fs::write(path, raw)
+            .with_context(|| format!("failed to write settings file: {}", path.display()))?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -325,5 +428,37 @@ mod tests {
 
         client.set_max_tokens(2048);
         assert_eq!(client.max_tokens(), 2048);
+    }
+
+    #[test]
+    fn persist_model_to_path_creates_home_settings() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join(".localcoder/settings.json");
+
+        LLMClient::persist_model_to_path(&path, "http://localhost:11434", "llama3.2").unwrap();
+
+        let raw = fs::read_to_string(&path).unwrap();
+        let settings: PersistedSettings = serde_json::from_str(&raw).unwrap();
+        assert_eq!(settings.ollama.url, "http://localhost:11434");
+        assert_eq!(settings.ollama.model, "llama3.2");
+    }
+
+    #[test]
+    fn persist_model_to_path_preserves_existing_url() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join(".localcoder/settings.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            r#"{"ollama":{"url":"http://remote-host:11434","model":"qwen2.5-coder:7b"}}"#,
+        )
+        .unwrap();
+
+        LLMClient::persist_model_to_path(&path, "http://localhost:11434", "deepseek-r1:8b").unwrap();
+
+        let raw = fs::read_to_string(&path).unwrap();
+        let settings: PersistedSettings = serde_json::from_str(&raw).unwrap();
+        assert_eq!(settings.ollama.url, "http://remote-host:11434");
+        assert_eq!(settings.ollama.model, "deepseek-r1:8b");
     }
 }

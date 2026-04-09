@@ -13,7 +13,7 @@ use crate::api::LLMClient;
 use crate::engine;
 use crate::tools::ToolRegistry;
 use crate::types::ConversationHistory;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use colored::*;
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 /// Start the REPL interactive interface
 pub async fn start_repl(registry: ToolRegistry) -> Result<()> {
     // Print usage instructions
-    let client = LLMClient::new()?;
+    let mut client = LLMClient::new()?;
     print_instructions(&client);
 
     // Conversation history as Vec<Value> (supports array content for tool calls)
@@ -52,6 +52,13 @@ pub async fn start_repl(registry: ToolRegistry) -> Result<()> {
 
                 // Handle commands
                 if input.starts_with('/') {
+                    if input.eq_ignore_ascii_case("/model") {
+                        if let Err(e) = select_model(&mut rl, &mut client).await {
+                            eprintln!("\n{} {}", "❌ Failed to update model:".red().bold(), e);
+                        }
+                        continue;
+                    }
+
                     if handle_command(input, &mut display_history).await {
                         break; // Exit
                     }
@@ -113,6 +120,7 @@ fn print_instructions(client: &LLMClient) {
         "  - Type {} to view conversation history",
         "/history".yellow()
     );
+    println!("  - Type {} to switch Ollama model", "/model".yellow());
     println!("  - Type {} to show help", "/help".yellow());
     println!();
 
@@ -189,10 +197,61 @@ fn print_help() {
         "  {}          - View conversation history (JSON format)",
         "/history".yellow()
     );
+    println!("  {}           - Select and persist Ollama model", "/model".yellow());
     println!("  {}             - Show this help", "/help".yellow());
     println!("  {}            - Show message count", "/count".yellow());
     println!("  {}          - Show current version", "/version".yellow());
     println!();
+}
+
+async fn select_model(rl: &mut DefaultEditor, client: &mut LLMClient) -> Result<()> {
+    let models = client.list_models().await?;
+    if models.is_empty() {
+        println!("\n{}", "⚠️ No models found from /api/tags".yellow());
+        return Ok(());
+    }
+
+    println!("\n{}", "📦 Available Ollama models:".cyan().bold());
+    for (index, model) in models.iter().enumerate() {
+        let current = if model == client.model() {
+            " (current)".green().to_string()
+        } else {
+            String::new()
+        };
+        println!("  {}. {}{}", index + 1, model.white(), current);
+    }
+
+    println!();
+    let prompt = format!(
+        "{} ",
+        "Select model number (Enter to cancel) >".cyan().bold()
+    );
+    let input = rl.readline(&prompt)?;
+    let input = input.trim();
+    if input.is_empty() {
+        println!("{}", "Model selection cancelled".yellow());
+        return Ok(());
+    }
+
+    let index = input
+        .parse::<usize>()
+        .context("please enter a valid model number")?;
+    if index == 0 || index > models.len() {
+        anyhow::bail!("model number out of range");
+    }
+
+    let model = models[index - 1].clone();
+    let path = client.persist_model_to_home(&model)?;
+    *client = LLMClient::new()?;
+
+    println!(
+        "{} {}",
+        "✅ Active model updated:".green(),
+        client.model().white()
+    );
+    println!("{} {}", "📝 Saved to:".cyan().bold(), path.display());
+
+    Ok(())
 }
 
 #[cfg(test)]
