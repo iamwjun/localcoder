@@ -102,6 +102,16 @@ localcoder -- "Replace 'hello' with 'world'"
 
 ---
 
+## 🛠️ File Search
+
+In Ollama mode, you can directly use built-in tools to work with files:
+
+```bash
+localcoder -- "search process_chunk function"
+```
+
+---
+
 ## 📝 REPL Commands
 
 | Command | Description |

@@ -1,6 +1,16 @@
 # Changelog
 
-<!-- last-commit: 4fa1c6d -->
+<!-- last-commit: 32b726c -->
+
+## v0.1.4 - 2026-04-13
+
+| Commit | Description |
+|--------|-------------|
+| `32b726c` | feat: support search tools |
+| `8768975` | docs: plan document |
+| `e728994` | docs: update README.md |
+| `cf8dc5e` | update CHANGELOG.md |
+
 
 ## v0.1.3 - 2026-04-09
 
