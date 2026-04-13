@@ -44,6 +44,8 @@ async fn main() -> Result<()> {
     registry.register(tools::ReadTool);
     registry.register(tools::EditTool);
     registry.register(tools::WriteTool);
+    registry.register(tools::GlobTool);
+    registry.register(tools::GrepTool);
 
     // Get command-line arguments
     let args: Vec<String> = env::args().skip(1).collect();
@@ -68,7 +70,7 @@ fn print_banner() {
     );
     println!(
         "{}",
-        "║         Localcoder Minimal Version (Rust) - CLI Interface   ║".cyan()
+        "║         Localcoder Minimal Version (Rust) - CLI Interface  ║".cyan()
     );
     println!(
         "{}",

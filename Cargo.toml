@@ -25,6 +25,12 @@ futures = "0.3"
 bytes = "1.7"
 # Markdown rendering
 termimad = "0.30"
+# File globbing (S03 GlobTool)
+glob = "0.3"
+# File walking with .gitignore support (S03 GrepTool)
+ignore = "0.4"
+# Regex engine (S03 GrepTool)
+regex = "1"
 
 [profile.release]
 opt-level = 3

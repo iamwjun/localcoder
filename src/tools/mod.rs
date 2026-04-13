@@ -1,5 +1,5 @@
 /*!
- * Tool System — S01/S02
+ * Tool System — S01/S02/S03
  *
  * Tool definitions and Ollama tool schema export.
  *
@@ -13,16 +13,24 @@
  *   EditTool      — exact string replacement   (src/tools/FileEditTool/)
  *   WriteTool     — create / overwrite file    (src/tools/FileWriteTool/)
  *
+ * S03 tools:
+ *   GlobTool      — file pattern matching      (src/tools/GlobTool/)
+ *   GrepTool      — content search with regex  (src/tools/GrepTool/)
+ *
  * Note: Uses edition 2024 native async fn in traits (no async_trait crate needed)
  */
 
 pub mod file_edit;
 pub mod file_read;
 pub mod file_write;
+pub mod glob_tool;
+pub mod grep_tool;
 
 pub use file_edit::EditTool;
 pub use file_read::ReadTool;
 pub use file_write::WriteTool;
+pub use glob_tool::GlobTool;
+pub use grep_tool::GrepTool;
 
 use anyhow::{Result, anyhow};
 use colored::*;
