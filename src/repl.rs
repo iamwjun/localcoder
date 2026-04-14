@@ -3,6 +3,7 @@
  */
 
 use crate::api::LLMClient;
+use crate::config::{AppConfig, Theme};
 use crate::engine;
 use crate::session::SessionStore;
 use crate::tools::ToolRegistry;
@@ -24,9 +25,9 @@ pub enum ResumeTarget {
 /// Start the REPL interactive interface
 pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<()> {
     let mut client = LLMClient::new()?;
-    print_instructions(&client);
-
     let cwd = env::current_dir().context("failed to resolve current directory")?;
+    let mut app_config = AppConfig::load(&cwd)?;
+    print_instructions(&client, &app_config);
     let (mut session, mut messages) = init_session(&cwd, resume)?;
     if let Some(s) = &session {
         println!("{} {}", "🧾 Session:".cyan().bold(), s.id.as_str().white());
@@ -69,6 +70,15 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
                     if input.eq_ignore_ascii_case("/model") {
                         if let Err(e) = select_model(&mut rl, &mut client).await {
                             eprintln!("\n{} {}", "❌ Failed to update model:".red().bold(), e);
+                        }
+                        continue;
+                    }
+
+                    if input.eq_ignore_ascii_case("/config") {
+                        if let Err(e) = handle_config_command(&mut rl, &cwd, &mut app_config) {
+                            eprintln!("\n{} {}", "❌ Config failed:".red().bold(), e);
+                        } else {
+                            print_instructions(&client, &app_config);
                         }
                         continue;
                     }
@@ -181,28 +191,39 @@ fn rebuild_display_history(messages: &[Value]) -> ConversationHistory {
     history
 }
 
-fn print_instructions(client: &LLMClient) {
+fn print_instructions(client: &LLMClient, app_config: &AppConfig) {
     println!("{}", "📝 Instructions:".cyan().bold());
     println!("  - Type a message and press Enter to send");
-    println!(
-        "  - Type {} or {} to exit",
-        "/exit".yellow(),
-        "/quit".yellow()
-    );
-    println!(
-        "  - Type {} to clear conversation history",
-        "/clear".yellow()
-    );
-    println!(
-        "  - Type {} to view conversation history",
-        "/history".yellow()
-    );
-    println!("  - Type {} to resume previous session", "/resume".yellow());
-    println!("  - Type {} to switch Ollama model", "/model".yellow());
-    println!("  - Type {} to show help", "/help".yellow());
+    if app_config.tips {
+        println!(
+            "  - Type {} or {} to exit",
+            "/exit".yellow(),
+            "/quit".yellow()
+        );
+        println!(
+            "  - Type {} to clear conversation history",
+            "/clear".yellow()
+        );
+        println!(
+            "  - Type {} to view conversation history",
+            "/history".yellow()
+        );
+        println!("  - Type {} to resume previous session", "/resume".yellow());
+        println!("  - Type {} to open config menu", "/config".yellow());
+        println!("  - Type {} to switch Ollama model", "/model".yellow());
+        println!("  - Type {} to show help", "/help".yellow());
+    } else {
+        println!("  - Tips are disabled. Use {} for all commands", "/help".yellow());
+    }
     println!();
 
     println!("{} {}", "🔧 Model:".cyan().bold(), client.model().white());
+    println!(
+        "{} theme={} tips={}",
+        "⚙️ UI:".cyan().bold(),
+        app_config.theme.to_string().white(),
+        if app_config.tips { "on".green() } else { "off".red() }
+    );
     println!(
         "{} {}",
         "🌐 Endpoint:".cyan().bold(),
@@ -267,11 +288,124 @@ fn print_help() {
         "/history".yellow()
     );
     println!("  {}           - List and resume a previous session", "/resume".yellow());
+    println!(
+        "  {}           - Configure UI settings (Theme / Tips)",
+        "/config".yellow()
+    );
     println!("  {}           - Select and persist Ollama model", "/model".yellow());
     println!("  {}             - Show this help", "/help".yellow());
     println!("  {}            - Show message count", "/count".yellow());
     println!("  {}          - Show current version", "/version".yellow());
     println!();
+}
+
+fn handle_config_command(
+    rl: &mut DefaultEditor,
+    cwd: &std::path::Path,
+    app_config: &mut AppConfig,
+) -> Result<()> {
+    println!("\n{}", "⚙️ Config Menu:".cyan().bold());
+    println!("  1. Theme");
+    println!("  2. Tips");
+    println!();
+
+    let input = rl.readline(&format!("{} ", "Select option (Enter to cancel) >".cyan().bold()))?;
+    let input = input.trim();
+    if input.is_empty() {
+        println!("{}", "Config cancelled".yellow());
+        return Ok(());
+    }
+
+    match input {
+        "1" => configure_theme(rl, cwd, app_config)?,
+        "2" => configure_tips(rl, cwd, app_config)?,
+        _ => println!("{}", "Unknown config option".yellow()),
+    }
+
+    Ok(())
+}
+
+fn configure_theme(
+    rl: &mut DefaultEditor,
+    cwd: &std::path::Path,
+    app_config: &mut AppConfig,
+) -> Result<()> {
+    println!("\n{}", "🎨 Theme:".cyan().bold());
+    println!("  1. default");
+    println!("  2. light");
+    println!("  3. dark");
+    println!("  current: {}", app_config.theme.to_string().white());
+    println!();
+
+    let input = rl.readline(&format!("{} ", "Select theme (Enter to cancel) >".cyan().bold()))?;
+    let input = input.trim();
+    if input.is_empty() {
+        println!("{}", "Theme change cancelled".yellow());
+        return Ok(());
+    }
+
+    let theme = match input {
+        "1" => Theme::Default,
+        "2" => Theme::Light,
+        "3" => Theme::Dark,
+        _ => {
+            println!("{}", "Unknown theme option".yellow());
+            return Ok(());
+        }
+    };
+
+    app_config.theme = theme;
+    let path = app_config.save(cwd)?;
+    println!(
+        "{} {} ({})",
+        "✅ Theme updated:".green(),
+        app_config.theme.to_string().white(),
+        path.display()
+    );
+    Ok(())
+}
+
+fn configure_tips(
+    rl: &mut DefaultEditor,
+    cwd: &std::path::Path,
+    app_config: &mut AppConfig,
+) -> Result<()> {
+    println!("\n{}", "💡 Tips:".cyan().bold());
+    println!("  1. on");
+    println!("  2. off");
+    println!(
+        "  current: {}",
+        if app_config.tips { "on".green() } else { "off".red() }
+    );
+    println!();
+
+    let input = rl.readline(&format!(
+        "{} ",
+        "Select tips mode (Enter to cancel) >".cyan().bold()
+    ))?;
+    let input = input.trim();
+    if input.is_empty() {
+        println!("{}", "Tips change cancelled".yellow());
+        return Ok(());
+    }
+
+    app_config.tips = match input {
+        "1" => true,
+        "2" => false,
+        _ => {
+            println!("{}", "Unknown tips option".yellow());
+            return Ok(());
+        }
+    };
+
+    let path = app_config.save(cwd)?;
+    println!(
+        "{} {} ({})",
+        "✅ Tips updated:".green(),
+        if app_config.tips { "on".green() } else { "off".red() },
+        path.display()
+    );
+    Ok(())
 }
 
 fn handle_resume_command(
