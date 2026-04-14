@@ -17,18 +17,18 @@ S02  文件操作工具  ✅   Read / Edit / Write          src/tools/FileReadTo
 S03  搜索工具     ✅    Glob / Grep                  src/tools/GlobTool/
 S04  命令执行     ✅    Bash 工具 + 安全检查         src/tools/BashTool/
 S05  会话持久化   ✅    JSONL 存储 + resume          src/utils/sessionStorage.js
-S06  配置系统           settings.json + /config      src/utils/settings/
-S07  权限系统           规则引擎 + 用户确认          src/utils/permissions/
-S08  上下文压缩         autoCompact + token 计数     src/services/compact/
-S09  Git 集成           /commit / /diff / /review    src/utils/git/
-S10  记忆系统           4 种记忆类型 + 自动提取      src/memdir/
-S11  子代理             fork + worktree 隔离         src/tools/AgentTool/
-S12  计划模式           TodoWrite + EnterPlanMode    src/tools/EnterPlanModeTool/
-S13  技能系统           SKILL.md + SkillTool         src/tools/SkillTool/
-S14  网络工具           WebFetch + WebSearch          src/tools/WebFetchTool/
-S15  费用追踪           Token 计数 + /cost 命令       src/cost-tracker.ts
-S16  多平台支持         Bedrock / Vertex / Foundry    src/utils/model/providers.ts
-S17  MCP 集成           MCP 协议客户端 + 5 种传输     src/services/mcp/
+S06  配置系统     ✅    settings.json + /config      src/utils/settings/
+S07  权限系统     ❌    规则引擎 + 用户确认          src/utils/permissions/
+S08  上下文压缩   ✅     autoCompact + token 计数     src/services/compact/
+S09  Git 集成    ✅     /commit / /diff / /review    src/utils/git/
+S10  记忆系统     ✅     4 种记忆类型 + 自动提取      src/memdir/
+S11  子代理      ❌     fork + worktree 隔离         src/tools/AgentTool/
+S12  计划模式     ✅     TodoWrite + EnterPlanMode    src/tools/EnterPlanModeTool/
+S13  技能系统     ✅     SKILL.md + SkillTool         src/tools/SkillTool/
+S14  网络工具     ✅    WebFetch + WebSearch          src/tools/WebFetchTool/
+S15  费用追踪     ❌    Token 计数 + /cost 命令       src/cost-tracker.ts
+S16  多平台支持   ❌    Bedrock / Vertex / Foundry    src/utils/model/providers.ts
+S17  MCP 集成    ❌    MCP 协议客户端 + 5 种传输     src/services/mcp/
 S18  输出样式           output-styles + /output-style  src/services/loadOutputStylesDir.ts
 S19  LSP 集成           语言服务器 + 代码导航         src/services/lsp/
 ```
