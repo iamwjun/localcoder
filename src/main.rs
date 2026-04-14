@@ -46,6 +46,7 @@ async fn main() -> Result<()> {
     registry.register(tools::WriteTool);
     registry.register(tools::GlobTool);
     registry.register(tools::GrepTool);
+    registry.register(tools::BashTool);
 
     // Get command-line arguments
     let args: Vec<String> = env::args().skip(1).collect();

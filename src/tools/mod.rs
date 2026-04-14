@@ -25,12 +25,14 @@ pub mod file_read;
 pub mod file_write;
 pub mod glob_tool;
 pub mod grep_tool;
+pub mod bash_tool;
 
 pub use file_edit::EditTool;
 pub use file_read::ReadTool;
 pub use file_write::WriteTool;
 pub use glob_tool::GlobTool;
 pub use grep_tool::GrepTool;
+pub use bash_tool::BashTool;
 
 use anyhow::{Result, anyhow};
 use colored::*;
