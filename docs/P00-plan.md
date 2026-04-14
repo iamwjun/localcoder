@@ -16,7 +16,7 @@ S01  工具系统架构  ✅   Tool 接口 + 注册表           src/Tool.ts
 S02  文件操作工具  ✅   Read / Edit / Write          src/tools/FileReadTool/
 S03  搜索工具     ✅    Glob / Grep                  src/tools/GlobTool/
 S04  命令执行     ✅    Bash 工具 + 安全检查         src/tools/BashTool/
-S05  会话持久化         JSONL 存储 + resume          src/utils/sessionStorage.js
+S05  会话持久化   ✅    JSONL 存储 + resume          src/utils/sessionStorage.js
 S06  配置系统           settings.json + /config      src/utils/settings/
 S07  权限系统           规则引擎 + 用户确认          src/utils/permissions/
 S08  上下文压缩         autoCompact + token 计数     src/services/compact/

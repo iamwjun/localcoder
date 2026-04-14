@@ -1,44 +1,28 @@
 /*!
  * Localcoder Rust Implementation
- *
- * Based on Claude Code v2.1.88 source analysis
- *
- * Core features:
- * 1. Connect to Ollama
- * 2. Streaming response handling
- * 3. Conversation history management
- * 4. REPL interactive interface
- *
- * Source references:
- * - src/services/api/claude.ts - API client implementation
- * - src/query.ts - Main query loop
- * - src/QueryEngine.ts - Session engine
  */
 
 mod api;
 mod engine;
 mod markdown;
 mod repl;
+mod session;
 mod tools;
 mod types;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use colored::*;
+use repl::ResumeTarget;
 use std::env;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Load environment variables
     dotenv::dotenv().ok();
-
     api::LLMClient::ensure_settings_file()?;
 
-    // Print welcome banner
     print_banner();
-
     println!("{}", "🦙 Using Ollama".green().bold());
 
-    // Register tools
     let mut registry = tools::ToolRegistry::new();
     registry.register(tools::EchoTool);
     registry.register(tools::ReadTool);
@@ -48,22 +32,47 @@ async fn main() -> Result<()> {
     registry.register(tools::GrepTool);
     registry.register(tools::BashTool);
 
-    // Get command-line arguments
     let args: Vec<String> = env::args().skip(1).collect();
+    let (resume_target, prompt_args) = parse_args(args)?;
 
-    if args.is_empty() {
-        // Interactive REPL mode
-        repl::start_repl(registry).await?;
+    if prompt_args.is_empty() {
+        repl::start_repl(registry, resume_target).await?;
     } else {
-        // Single-shot query mode
-        let prompt = args.join(" ");
+        let prompt = prompt_args.join(" ");
         one_shot(&prompt, registry).await?;
     }
 
     Ok(())
 }
 
-/// Print welcome banner
+fn parse_args(args: Vec<String>) -> Result<(ResumeTarget, Vec<String>)> {
+    let mut prompt_args: Vec<String> = Vec::new();
+    let mut resume_target = ResumeTarget::New;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--continue" => {
+                resume_target = ResumeTarget::ContinueLatest;
+                i += 1;
+            }
+            "--resume" => {
+                let id = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow!("--resume requires a session id"))?;
+                resume_target = ResumeTarget::ResumeId(id.clone());
+                i += 2;
+            }
+            other => {
+                prompt_args.push(other.to_string());
+                i += 1;
+            }
+        }
+    }
+
+    Ok((resume_target, prompt_args))
+}
+
 fn print_banner() {
     println!(
         "{}",
@@ -80,13 +89,11 @@ fn print_banner() {
     println!();
 }
 
-/// Single-shot query mode
 async fn one_shot(prompt: &str, registry: tools::ToolRegistry) -> Result<()> {
     println!("{} {}", "💬 User:".green().bold(), prompt);
     println!();
 
     let client = api::LLMClient::new()?;
-
     println!("{}", "🤖 Model is thinking...\n".yellow());
 
     let mut messages = vec![serde_json::json!({"role": "user", "content": prompt})];
@@ -101,5 +108,34 @@ async fn one_shot(prompt: &str, registry: tools::ToolRegistry) -> Result<()> {
             eprintln!("{} {}", "❌ Error:".red().bold(), e);
             Err(e)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_args_continue() {
+        let (resume, prompt) = parse_args(vec!["--continue".into()]).unwrap();
+        assert!(matches!(resume, ResumeTarget::ContinueLatest));
+        assert!(prompt.is_empty());
+    }
+
+    #[test]
+    fn parse_args_resume_with_id() {
+        let (resume, prompt) = parse_args(vec!["--resume".into(), "abc123".into()]).unwrap();
+        match resume {
+            ResumeTarget::ResumeId(id) => assert_eq!(id, "abc123"),
+            _ => panic!("expected ResumeId"),
+        }
+        assert!(prompt.is_empty());
+    }
+
+    #[test]
+    fn parse_args_prompt_only() {
+        let (resume, prompt) = parse_args(vec!["hello".into(), "world".into()]).unwrap();
+        assert!(matches!(resume, ResumeTarget::New));
+        assert_eq!(prompt, vec!["hello", "world"]);
     }
 }

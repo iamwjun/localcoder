@@ -1,16 +1,10 @@
 /*!
  * REPL Interactive Interface Module
- *
- * Corresponds to: src/main.tsx - REPL implementation
- *
- * Features:
- * - Interactive command-line interface
- * - Conversation history management
- * - Command handling
  */
 
 use crate::api::LLMClient;
 use crate::engine;
+use crate::session::SessionStore;
 use crate::tools::ToolRegistry;
 use crate::types::ConversationHistory;
 use anyhow::{Context, Result};
@@ -18,40 +12,60 @@ use colored::*;
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 use serde_json::{Value, json};
+use std::env;
+
+#[derive(Debug, Clone)]
+pub enum ResumeTarget {
+    New,
+    ContinueLatest,
+    ResumeId(String),
+}
+
 /// Start the REPL interactive interface
-pub async fn start_repl(registry: ToolRegistry) -> Result<()> {
-    // Print usage instructions
+pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<()> {
     let mut client = LLMClient::new()?;
     print_instructions(&client);
 
-    // Conversation history as Vec<Value> (supports array content for tool calls)
-    let mut messages: Vec<Value> = Vec::new();
+    let cwd = env::current_dir().context("failed to resolve current directory")?;
+    let (mut session, mut messages) = init_session(&cwd, resume)?;
+    if let Some(s) = &session {
+        println!("{} {}", "🧾 Session:".cyan().bold(), s.id.as_str().white());
+    } else {
+        println!("{}", "🧾 Session: (not started yet)".cyan().bold());
+    }
 
-    // Legacy text-only history for /history command display
-    let mut display_history = ConversationHistory::new();
+    let mut display_history = rebuild_display_history(&messages);
 
-    // Create readline editor
     let mut rl = DefaultEditor::new()?;
 
-    // Main loop
     loop {
-        // Read user input
         let readline = rl.readline(&format!("\n{} ", "💬 You >".green().bold()));
 
         match readline {
             Ok(line) => {
                 let input = line.trim();
-
-                // Skip empty input
                 if input.is_empty() {
                     continue;
                 }
 
-                // Add to readline history
                 let _ = rl.add_history_entry(input);
 
-                // Handle commands
                 if input.starts_with('/') {
+                    if input.eq_ignore_ascii_case("/resume") {
+                        if let Err(e) =
+                            handle_resume_command(
+                                &mut rl,
+                                &cwd,
+                                &mut session,
+                                &mut messages,
+                                &mut display_history,
+                            )
+                        {
+                            eprintln!("\n{} {}", "❌ Resume failed:".red().bold(), e);
+                        }
+                        continue;
+                    }
+
                     if input.eq_ignore_ascii_case("/model") {
                         if let Err(e) = select_model(&mut rl, &mut client).await {
                             eprintln!("\n{} {}", "❌ Failed to update model:".red().bold(), e);
@@ -60,28 +74,40 @@ pub async fn start_repl(registry: ToolRegistry) -> Result<()> {
                     }
 
                     if handle_command(input, &mut display_history).await {
-                        break; // Exit
+                        break;
                     }
                     continue;
                 }
 
-                // Append user message to conversation
                 messages.push(json!({"role": "user", "content": input}));
                 display_history.add_user_message(input);
+                ensure_session_started(&cwd, &mut session)?;
+                session
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("session was not initialized"))?
+                    .append_message(
+                    messages
+                        .last()
+                        .ok_or_else(|| anyhow::anyhow!("missing just-added user message"))?,
+                )?;
 
                 println!("\n{}", "🤖 Model is thinking...\n".yellow());
 
-                // Run agent loop (handles tool calls internally)
+                let before_len = messages.len();
+
                 match engine::run_agent_loop(&client, &registry, &mut messages).await {
                     Ok(response) => {
-                        display_history.add_assistant_message(&response);
-                        println!();
+                        if let Some(s) = &session {
+                            s.append_messages(&messages[before_len..])?;
+                        }
+                        display_history = rebuild_display_history(&messages);
+                        if response.is_empty() {
+                            println!();
+                        }
                     }
                     Err(e) => {
                         eprintln!("\n{} {}", "❌ Error:".red().bold(), e);
-                        // Pop the user message we just added to keep history consistent
-                        messages.pop();
-                        display_history.clear(); // rebuild from scratch on error
+                        display_history = rebuild_display_history(&messages);
                     }
                 }
             }
@@ -103,7 +129,58 @@ pub async fn start_repl(registry: ToolRegistry) -> Result<()> {
     Ok(())
 }
 
-/// Print usage instructions
+fn init_session(
+    cwd: &std::path::Path,
+    resume: ResumeTarget,
+) -> Result<(Option<SessionStore>, Vec<Value>)> {
+    match resume {
+        ResumeTarget::New => Ok((None, Vec::new())),
+        ResumeTarget::ContinueLatest => {
+            if let Some(store) = SessionStore::load_latest(cwd)? {
+                let messages = store.load_messages()?;
+                println!(
+                    "{} {}",
+                    "🔄 Resumed latest session:".cyan().bold(),
+                    store.id.as_str().white()
+                );
+                Ok((Some(store), messages))
+            } else {
+                println!(
+                    "{}",
+                    "ℹ️ No previous session found; session will start on first message".yellow()
+                );
+                Ok((None, Vec::new()))
+            }
+        }
+        ResumeTarget::ResumeId(id) => {
+            let store = SessionStore::load(cwd, &id)?;
+            let messages = store.load_messages()?;
+            println!(
+                "{} {}",
+                "🔄 Resumed session:".cyan().bold(),
+                id.as_str().white()
+            );
+            Ok((Some(store), messages))
+        }
+    }
+}
+
+fn rebuild_display_history(messages: &[Value]) -> ConversationHistory {
+    let mut history = ConversationHistory::new();
+    for msg in messages {
+        let Some(role) = msg["role"].as_str() else {
+            continue;
+        };
+        let content = msg["content"].as_str().unwrap_or_default();
+        match role {
+            "user" => history.add_user_message(content),
+            "assistant" => history.add_assistant_message(content),
+            _ => {}
+        }
+    }
+    history
+}
+
 fn print_instructions(client: &LLMClient) {
     println!("{}", "📝 Instructions:".cyan().bold());
     println!("  - Type a message and press Enter to send");
@@ -120,6 +197,7 @@ fn print_instructions(client: &LLMClient) {
         "  - Type {} to view conversation history",
         "/history".yellow()
     );
+    println!("  - Type {} to resume previous session", "/resume".yellow());
     println!("  - Type {} to switch Ollama model", "/model".yellow());
     println!("  - Type {} to show help", "/help".yellow());
     println!();
@@ -133,20 +211,16 @@ fn print_instructions(client: &LLMClient) {
     println!();
 }
 
-/// Handle commands
-/// Returns true to exit
 async fn handle_command(command: &str, history: &mut ConversationHistory) -> bool {
     match command.to_lowercase().as_str() {
         "/exit" | "/quit" => {
             println!("\n{}", "👋 Goodbye!".cyan());
             return true;
         }
-
         "/clear" => {
             history.clear();
             println!("\n{}", "✅ Conversation history cleared".green());
         }
-
         "/history" => {
             println!("\n{}", "📜 Conversation history:".cyan().bold());
             if history.is_empty() {
@@ -158,15 +232,12 @@ async fn handle_command(command: &str, history: &mut ConversationHistory) -> boo
                 }
             }
         }
-
         "/help" => {
             print_help();
         }
-
         "/count" => {
             println!("\n{} {}", "📊 Message count:".cyan().bold(), history.len());
         }
-
         "/version" => {
             println!(
                 "\n{} {}",
@@ -174,7 +245,6 @@ async fn handle_command(command: &str, history: &mut ConversationHistory) -> boo
                 env!("CARGO_PKG_VERSION").white()
             );
         }
-
         _ => {
             println!("\n{} {}", "❌ Unknown command:".red().bold(), command);
             println!("Type {} to see available commands", "/help".yellow());
@@ -184,7 +254,6 @@ async fn handle_command(command: &str, history: &mut ConversationHistory) -> boo
     false
 }
 
-/// Print help information
 fn print_help() {
     println!("\n{}", "📖 Available commands:".cyan().bold());
     println!();
@@ -197,11 +266,135 @@ fn print_help() {
         "  {}          - View conversation history (JSON format)",
         "/history".yellow()
     );
+    println!("  {}           - List and resume a previous session", "/resume".yellow());
     println!("  {}           - Select and persist Ollama model", "/model".yellow());
     println!("  {}             - Show this help", "/help".yellow());
     println!("  {}            - Show message count", "/count".yellow());
     println!("  {}          - Show current version", "/version".yellow());
     println!();
+}
+
+fn handle_resume_command(
+    rl: &mut DefaultEditor,
+    cwd: &std::path::Path,
+    session: &mut Option<SessionStore>,
+    messages: &mut Vec<Value>,
+    display_history: &mut ConversationHistory,
+) -> Result<()> {
+    let sessions = SessionStore::list(cwd)?;
+    if sessions.is_empty() {
+        println!("\n{}", "ℹ️ No saved sessions for current project".yellow());
+        return Ok(());
+    }
+
+    println!("\n{}", "📚 Available sessions:".cyan().bold());
+    for (index, s) in sessions.iter().enumerate() {
+        let preview = session_last_user_preview(s).unwrap_or_else(|_| "(failed to load)".to_string());
+        println!("  {}. {} {}", index + 1, preview.white(), format!("[{}]", s.id).dimmed());
+    }
+    println!();
+
+    let prompt = format!(
+        "{} ",
+        "Select session number (Enter to cancel) >".cyan().bold()
+    );
+    let input = rl.readline(&prompt)?;
+    let input = input.trim();
+    if input.is_empty() {
+        println!("{}", "Resume cancelled".yellow());
+        return Ok(());
+    }
+
+    let index = input
+        .parse::<usize>()
+        .context("please enter a valid session number")?;
+    if index == 0 || index > sessions.len() {
+        anyhow::bail!("session number out of range");
+    }
+
+    let selected = sessions[index - 1].clone();
+    let loaded_messages = selected.load_messages()?;
+
+    *session = Some(selected);
+    *messages = loaded_messages;
+    *display_history = rebuild_display_history(messages);
+
+    println!(
+        "{} {}",
+        "🔄 Resumed session:".green().bold(),
+        session
+            .as_ref()
+            .map(|s| s.id.as_str())
+            .unwrap_or("unknown")
+            .white()
+    );
+    print_loaded_history(messages);
+
+    Ok(())
+}
+
+fn session_last_user_preview(session: &SessionStore) -> Result<String> {
+    let messages = session.load_messages()?;
+    let last_user = messages
+        .iter()
+        .rev()
+        .find(|m| m["role"].as_str() == Some("user"))
+        .and_then(|m| m["content"].as_str())
+        .unwrap_or("(no user message)");
+
+    Ok(truncate_preview(last_user, 48))
+}
+
+fn truncate_preview(s: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    for (i, ch) in s.chars().enumerate() {
+        if i >= max_chars {
+            out.push_str("...");
+            break;
+        }
+        out.push(ch);
+    }
+    if out.is_empty() {
+        "(empty)".to_string()
+    } else {
+        out
+    }
+}
+
+fn ensure_session_started(cwd: &std::path::Path, session: &mut Option<SessionStore>) -> Result<()> {
+    if session.is_none() {
+        let created = SessionStore::create(cwd)?;
+        println!(
+            "{} {}",
+            "🧾 Session started:".cyan().bold(),
+            created.id.as_str().white()
+        );
+        *session = Some(created);
+    }
+    Ok(())
+}
+
+fn print_loaded_history(messages: &[Value]) {
+    println!("\n{}", "📜 Loaded conversation history:".cyan().bold());
+    if messages.is_empty() {
+        println!("  {}", "(empty)".dimmed());
+        return;
+    }
+
+    for msg in messages {
+        let role = msg["role"].as_str().unwrap_or("unknown");
+        let content = msg["content"].as_str().unwrap_or_default();
+        match role {
+            "user" => println!("  {} {}", "You:".green().bold(), content),
+            "assistant" => println!("  {} {}", "Assistant:".blue().bold(), content),
+            "tool" => println!(
+                "  {} {}",
+                "Tool:".yellow().bold(),
+                msg["tool_name"].as_str().unwrap_or("unknown")
+            ),
+            _ => {}
+        }
+    }
 }
 
 async fn select_model(rl: &mut DefaultEditor, client: &mut LLMClient) -> Result<()> {
@@ -334,5 +527,16 @@ mod tests {
     async fn commands_are_case_insensitive() {
         let mut h = ConversationHistory::new();
         assert!(handle_command("/EXIT", &mut h).await);
+    }
+
+    #[test]
+    fn rebuild_display_history_only_user_assistant() {
+        let messages = vec![
+            json!({"role":"user","content":"u"}),
+            json!({"role":"assistant","content":"a"}),
+            json!({"role":"tool","content":"t"}),
+        ];
+        let h = rebuild_display_history(&messages);
+        assert_eq!(h.len(), 2);
     }
 }
