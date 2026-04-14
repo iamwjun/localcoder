@@ -29,8 +29,8 @@ S14  网络工具     ✅    WebFetch + WebSearch          src/tools/WebFetchToo
 S15  费用追踪     ❌    Token 计数 + /cost 命令       src/cost-tracker.ts
 S16  多平台支持   ❌    Bedrock / Vertex / Foundry    src/utils/model/providers.ts
 S17  MCP 集成    ❌    MCP 协议客户端 + 5 种传输     src/services/mcp/
-S18  输出样式           output-styles + /output-style  src/services/loadOutputStylesDir.ts
-S19  LSP 集成           语言服务器 + 代码导航         src/services/lsp/
+S18  输出样式     ✅    output-styles + /output-style  src/services/loadOutputStylesDir.ts
+S19  LSP 集成    ✅     语言服务器 + 代码导航         src/services/lsp/
 ```
 
 ---

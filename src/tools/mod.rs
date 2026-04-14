@@ -20,23 +20,25 @@
  * Note: Uses edition 2024 native async fn in traits (no async_trait crate needed)
  */
 
+pub mod bash_tool;
 pub mod file_edit;
 pub mod file_read;
 pub mod file_write;
 pub mod glob_tool;
 pub mod grep_tool;
-pub mod bash_tool;
+pub mod lsp_tool;
 pub mod plan_tools;
 pub mod skill_tool;
 pub mod web_fetch;
 pub mod web_search;
 
+pub use bash_tool::BashTool;
 pub use file_edit::EditTool;
 pub use file_read::ReadTool;
 pub use file_write::WriteTool;
 pub use glob_tool::GlobTool;
 pub use grep_tool::GrepTool;
-pub use bash_tool::BashTool;
+pub use lsp_tool::LspTool;
 pub use plan_tools::{EnterPlanModeTool, ExitPlanModeTool, TodoWriteTool};
 pub use skill_tool::SkillTool;
 pub use web_fetch::WebFetchTool;

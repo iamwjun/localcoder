@@ -12,6 +12,7 @@ mod memory;
 mod output_style;
 mod plan;
 mod repl;
+mod services;
 mod session;
 mod skills;
 mod tools;
@@ -44,6 +45,7 @@ async fn main() -> Result<()> {
     registry.register(tools::GlobTool);
     registry.register(tools::GrepTool);
     registry.register(tools::BashTool);
+    registry.register(tools::LspTool::new(&cwd)?);
     registry.register(tools::WebFetchTool);
     registry.register(tools::WebSearchTool);
     registry.register(tools::EnterPlanModeTool::new(plan_manager.clone()));
@@ -280,7 +282,10 @@ mod tests {
 
     #[test]
     fn parse_command_arg_extracts_argument() {
-        assert_eq!(parse_command_arg("/web rust async", "/web"), Some("rust async"));
+        assert_eq!(
+            parse_command_arg("/web rust async", "/web"),
+            Some("rust async")
+        );
     }
 
     #[test]
