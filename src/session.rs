@@ -104,6 +104,24 @@ impl SessionStore {
         Ok(())
     }
 
+    pub fn replace_messages(&self, messages: &[Value]) -> Result<()> {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&self.path)
+            .with_context(|| format!("failed to rewrite session file: {}", self.path.display()))?;
+
+        for message in messages {
+            let event = message_to_event(message)?;
+            let line = serde_json::to_string(&event).context("failed to serialize session event")?;
+            writeln!(file, "{}", line).context("failed to rewrite session line")?;
+        }
+
+        file.flush().context("failed to flush rewritten session file")?;
+        Ok(())
+    }
+
     pub fn load_messages(&self) -> Result<Vec<Value>> {
         let file = OpenOptions::new()
             .read(true)
@@ -180,6 +198,11 @@ fn message_to_event(message: &Value) -> Result<Value> {
             "tool_calls": message.get("tool_calls").cloned().unwrap_or(Value::Null),
             "timestamp": timestamp,
         })),
+        "system" => Ok(json!({
+            "type": "system",
+            "content": message["content"].as_str().unwrap_or_default(),
+            "timestamp": timestamp,
+        })),
         "tool" => Ok(json!({
             "type": "tool_result",
             "tool_name": message["tool_name"].as_str().unwrap_or_default(),
@@ -207,6 +230,10 @@ fn event_to_message(event: &Value) -> Option<Value> {
             }
             Some(msg)
         }
+        "system" => Some(json!({
+            "role": "system",
+            "content": event["content"].as_str().unwrap_or_default(),
+        })),
         "tool_result" => Some(json!({
             "role": "tool",
             "tool_name": event["tool_name"].as_str().unwrap_or_default(),
@@ -306,5 +333,27 @@ mod tests {
 
         assert!(!sessions.is_empty());
         assert_eq!(sessions[0].id, store.id);
+    }
+
+    #[test]
+    fn replace_messages_rewrites_file_with_system_message() {
+        let fake_home = TempDir::new().unwrap();
+        unsafe { std::env::set_var("HOME", fake_home.path()); }
+
+        let project = TempDir::new().unwrap();
+        let store = SessionStore::create(project.path()).unwrap();
+        store.append_message(&json!({"role":"user","content":"old"})).unwrap();
+
+        store
+            .replace_messages(&[
+                json!({"role":"system","content":"[对话摘要]\\nsummary"}),
+                json!({"role":"user","content":"new"}),
+            ])
+            .unwrap();
+
+        let loaded = store.load_messages().unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0]["role"], "system");
+        assert_eq!(loaded[1]["content"], "new");
     }
 }

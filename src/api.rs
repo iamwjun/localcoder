@@ -236,6 +236,49 @@ impl LLMClient {
         })
     }
 
+    pub async fn summarize_messages(&self, messages: &[Value]) -> Result<String> {
+        let prompt = format!(
+            "以下是一段对话历史，请生成简洁摘要，保留：\n1. 已完成的任务和结果\n2. 重要文件修改\n3. 用户的关键偏好和决定\n4. 未完成的任务\n\n对话历史：\n{}",
+            crate::compact::summarize_for_prompt(messages)
+        );
+
+        let body = json!({
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            "stream": false,
+            "options": {
+                "num_predict": 1024
+            }
+        });
+
+        let response = self
+            .client
+            .post(format!("{}/api/chat", self.base_url))
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .context("Ollama summarize request failed")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            anyhow::bail!("Ollama returned error {}: {}", status, error_text);
+        }
+
+        let response: OllamaChatResponse = response
+            .json()
+            .await
+            .context("failed to parse Ollama summarize response")?;
+
+        Ok(response.message.content.unwrap_or_default())
+    }
+
     /// Set model.
     pub fn set_model(&mut self, model: String) {
         self.model = model;

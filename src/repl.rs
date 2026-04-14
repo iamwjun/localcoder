@@ -3,6 +3,7 @@
  */
 
 use crate::api::LLMClient;
+use crate::compact;
 use crate::config::{AppConfig, Theme};
 use crate::engine;
 use crate::session::SessionStore;
@@ -83,6 +84,21 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
                         continue;
                     }
 
+                    if input.eq_ignore_ascii_case("/compact") {
+                        if let Err(e) = handle_manual_compact(
+                            &client,
+                            &cwd,
+                            &mut session,
+                            &mut messages,
+                            &mut display_history,
+                        )
+                        .await
+                        {
+                            eprintln!("\n{} {}", "❌ Compact failed:".red().bold(), e);
+                        }
+                        continue;
+                    }
+
                     if handle_command(input, &mut display_history).await {
                         break;
                     }
@@ -102,6 +118,8 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
                 )?;
 
                 println!("\n{}", "🤖 Model is thinking...\n".yellow());
+
+                maybe_auto_compact(&client, &mut session, &mut messages, &mut display_history).await?;
 
                 let before_len = messages.len();
 
@@ -209,6 +227,7 @@ fn print_instructions(client: &LLMClient, app_config: &AppConfig) {
             "/history".yellow()
         );
         println!("  - Type {} to resume previous session", "/resume".yellow());
+        println!("  - Type {} to compact long context", "/compact".yellow());
         println!("  - Type {} to open config menu", "/config".yellow());
         println!("  - Type {} to switch Ollama model", "/model".yellow());
         println!("  - Type {} to show help", "/help".yellow());
@@ -288,6 +307,7 @@ fn print_help() {
         "/history".yellow()
     );
     println!("  {}           - List and resume a previous session", "/resume".yellow());
+    println!("  {}           - Manually compact conversation context", "/compact".yellow());
     println!(
         "  {}           - Configure UI settings (Theme / Tips)",
         "/config".yellow()
@@ -297,6 +317,52 @@ fn print_help() {
     println!("  {}            - Show message count", "/count".yellow());
     println!("  {}          - Show current version", "/version".yellow());
     println!();
+}
+
+async fn maybe_auto_compact(
+    client: &LLMClient,
+    session: &mut Option<SessionStore>,
+    messages: &mut Vec<Value>,
+    display_history: &mut ConversationHistory,
+) -> Result<()> {
+    if compact::maybe_compact(client, messages).await? {
+        if let Some(store) = session {
+            store.replace_messages(messages)?;
+        }
+        *display_history = rebuild_display_history(messages);
+        println!(
+            "{} {}",
+            "⚡ Context compacted automatically. Estimated tokens:".cyan().bold(),
+            compact::estimate_tokens(messages)
+        );
+    }
+    Ok(())
+}
+
+async fn handle_manual_compact(
+    client: &LLMClient,
+    cwd: &std::path::Path,
+    session: &mut Option<SessionStore>,
+    messages: &mut Vec<Value>,
+    display_history: &mut ConversationHistory,
+) -> Result<()> {
+    ensure_session_started(cwd, session)?;
+
+    if compact::force_compact(client, messages).await? {
+        if let Some(store) = session {
+            store.replace_messages(messages)?;
+        }
+        *display_history = rebuild_display_history(messages);
+        println!(
+            "{} {}",
+            "✅ Context compacted. Estimated tokens:".green(),
+            compact::estimate_tokens(messages)
+        );
+    } else {
+        println!("{}", "ℹ️ Not enough history to compact yet".yellow());
+    }
+
+    Ok(())
 }
 
 fn handle_config_command(

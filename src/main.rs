@@ -3,6 +3,7 @@
  */
 
 mod api;
+mod compact;
 mod config;
 mod engine;
 mod markdown;
