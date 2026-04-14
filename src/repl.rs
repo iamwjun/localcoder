@@ -7,6 +7,7 @@ use crate::compact;
 use crate::config::{AppConfig, Theme};
 use crate::engine;
 use crate::git;
+use crate::memory::MemoryStore;
 use crate::session::SessionStore;
 use crate::tools::ToolRegistry;
 use crate::types::ConversationHistory;
@@ -31,6 +32,7 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
     let mut app_config = AppConfig::load(&cwd)?;
     print_instructions(&client, &app_config);
     let (mut session, mut messages) = init_session(&cwd, resume)?;
+    let mut memory_store = MemoryStore::new(&cwd, visible_message_count(&messages))?;
     if let Some(s) = &session {
         println!("{} {}", "🧾 Session:".cyan().bold(), s.id.as_str().white());
     } else {
@@ -59,6 +61,7 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
                             handle_resume_command(
                                 &mut rl,
                                 &cwd,
+                                &mut memory_store,
                                 &mut session,
                                 &mut messages,
                                 &mut display_history,
@@ -122,6 +125,13 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
                         continue;
                     }
 
+                    if command_arg(input, "/memory").is_some() {
+                        if let Err(e) = handle_memory_command(&memory_store) {
+                            eprintln!("\n{} {}", "❌ Memory failed:".red().bold(), e);
+                        }
+                        continue;
+                    }
+
                     if handle_command(input, &mut display_history).await {
                         break;
                     }
@@ -145,13 +155,33 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
                 maybe_auto_compact(&client, &mut session, &mut messages, &mut display_history).await?;
 
                 let before_len = messages.len();
+                let system_prompt = memory_store.build_system_prompt()?;
 
-                match engine::run_agent_loop(&client, &registry, &mut messages).await {
+                match engine::run_agent_loop_with_system_prompt(
+                    &client,
+                    &registry,
+                    &mut messages,
+                    system_prompt.as_deref(),
+                )
+                .await
+                {
                     Ok(response) => {
                         if let Some(s) = &session {
                             s.append_messages(&messages[before_len..])?;
                         }
                         display_history = rebuild_display_history(&messages);
+                        let saved_memories = memory_store.extract_and_save(&client, &messages).await?;
+                        if !saved_memories.is_empty() {
+                            println!(
+                                "\n{} {}",
+                                "🧠 Saved memories:".cyan().bold(),
+                                saved_memories
+                                    .iter()
+                                    .map(|m| format!("[{}] {}", m.memory_type, m.name))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            );
+                        }
                         if response.is_empty() {
                             println!();
                         }
@@ -232,6 +262,13 @@ fn rebuild_display_history(messages: &[Value]) -> ConversationHistory {
     history
 }
 
+fn visible_message_count(messages: &[Value]) -> usize {
+    messages
+        .iter()
+        .filter(|msg| matches!(msg["role"].as_str(), Some("user" | "assistant")))
+        .count()
+}
+
 fn print_instructions(client: &LLMClient, app_config: &AppConfig) {
     println!("{}", "📝 Instructions:".cyan().bold());
     println!("  - Type a message and press Enter to send");
@@ -254,6 +291,7 @@ fn print_instructions(client: &LLMClient, app_config: &AppConfig) {
         println!("  - Type {} to show git diff", "/diff".yellow());
         println!("  - Type {} to review current diff", "/review".yellow());
         println!("  - Type {} to generate and run git commit", "/commit".yellow());
+        println!("  - Type {} to list saved memories", "/memory".yellow());
         println!("  - Type {} to open config menu", "/config".yellow());
         println!("  - Type {} to switch Ollama model", "/model".yellow());
         println!("  - Type {} to show help", "/help".yellow());
@@ -265,7 +303,7 @@ fn print_instructions(client: &LLMClient, app_config: &AppConfig) {
     println!("{} {}", "🔧 Model:".cyan().bold(), client.model().white());
     println!(
         "{} theme={} tips={}",
-        "⚙️ UI:".cyan().bold(),
+        "⚙️  UI:".cyan().bold(),
         app_config.theme.to_string().white(),
         if app_config.tips { "on".green() } else { "off".red() }
     );
@@ -337,6 +375,7 @@ fn print_help() {
     println!("  {}              - Show current git diff", "/diff".yellow());
     println!("  {}            - Review current git diff with the model", "/review".yellow());
     println!("  {}    - Generate a commit message and commit", "/commit [title]".yellow());
+    println!("  {}           - List saved memories", "/memory".yellow());
     println!(
         "  {}           - Configure UI settings (Theme / Tips)",
         "/config".yellow()
@@ -365,6 +404,12 @@ async fn maybe_auto_compact(
             compact::estimate_tokens(messages)
         );
     }
+    Ok(())
+}
+
+fn handle_memory_command(memory_store: &MemoryStore) -> Result<()> {
+    println!("\n{}", "🧠 Saved memories:".cyan().bold());
+    println!("{}", memory_store.render_memory_list()?);
     Ok(())
 }
 
@@ -506,6 +551,7 @@ fn configure_tips(
 fn handle_resume_command(
     rl: &mut DefaultEditor,
     cwd: &std::path::Path,
+    memory_store: &mut MemoryStore,
     session: &mut Option<SessionStore>,
     messages: &mut Vec<Value>,
     display_history: &mut ConversationHistory,
@@ -546,6 +592,7 @@ fn handle_resume_command(
 
     *session = Some(selected);
     *messages = loaded_messages;
+    memory_store.set_processed_visible_messages(visible_message_count(messages));
     *display_history = rebuild_display_history(messages);
 
     println!(

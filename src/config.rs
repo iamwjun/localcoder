@@ -64,47 +64,29 @@ fn default_tips() -> bool {
 impl AppConfig {
     pub fn load(project_dir: &Path) -> Result<Self> {
         let path = resolve_settings_path(project_dir)?;
-        if !path.exists() {
-            return Ok(Self::default());
-        }
-
-        let raw = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read settings file: {}", path.display()))?;
-        let root: Value = serde_json::from_str(&raw)
-            .with_context(|| format!("invalid settings JSON: {}", path.display()))?;
-
-        let ui = root.get("ui").cloned().unwrap_or_else(|| json!({}));
-        let cfg = serde_json::from_value::<Self>(ui).unwrap_or_default();
-        Ok(cfg)
+        load_from_path(&path)
     }
 
     pub fn save(&self, project_dir: &Path) -> Result<PathBuf> {
         let path = resolve_settings_path(project_dir)?;
-
-        let mut root: Value = if path.exists() {
-            let raw = fs::read_to_string(&path)
-                .with_context(|| format!("failed to read settings file: {}", path.display()))?;
-            serde_json::from_str(&raw)
-                .with_context(|| format!("invalid settings JSON: {}", path.display()))?
-        } else {
-            default_settings_json()
-        };
-
-        root["ui"] = serde_json::to_value(self).context("failed to serialize ui config")?;
-
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create settings dir: {}", parent.display()))?;
-        }
-
-        fs::write(
-            &path,
-            serde_json::to_string_pretty(&root).context("failed to serialize settings")?,
-        )
-        .with_context(|| format!("failed to write settings file: {}", path.display()))?;
-
+        save_to_path(self, &path)?;
         Ok(path)
     }
+}
+
+fn load_from_path(path: &Path) -> Result<AppConfig> {
+    if !path.exists() {
+        return Ok(AppConfig::default());
+    }
+
+    let raw = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read settings file: {}", path.display()))?;
+    let root: Value = serde_json::from_str(&raw)
+        .with_context(|| format!("invalid settings JSON: {}", path.display()))?;
+
+    let ui = root.get("ui").cloned().unwrap_or_else(|| json!({}));
+    let cfg = serde_json::from_value::<AppConfig>(ui).unwrap_or_default();
+    Ok(cfg)
 }
 
 fn default_settings_json() -> Value {
@@ -117,19 +99,48 @@ fn default_settings_json() -> Value {
 }
 
 fn resolve_settings_path(project_dir: &Path) -> Result<PathBuf> {
+    resolve_settings_path_with_home(project_dir, std::env::var_os("HOME").as_deref().map(Path::new))
+}
+
+fn resolve_settings_path_with_home(project_dir: &Path, home: Option<&Path>) -> Result<PathBuf> {
     let cwd_path = project_dir.join(".localcoder/settings.json");
     if cwd_path.exists() {
         return Ok(cwd_path);
     }
 
-    if let Some(home) = std::env::var_os("HOME") {
-        let home_path = PathBuf::from(home).join(".localcoder/settings.json");
+    if let Some(home) = home {
+        let home_path = home.join(".localcoder/settings.json");
         if home_path.exists() {
             return Ok(home_path);
         }
     }
 
     Ok(cwd_path)
+}
+
+fn save_to_path(config: &AppConfig, path: &Path) -> Result<()> {
+    let mut root: Value = if path.exists() {
+        let raw = fs::read_to_string(path)
+            .with_context(|| format!("failed to read settings file: {}", path.display()))?;
+        serde_json::from_str(&raw)
+            .with_context(|| format!("invalid settings JSON: {}", path.display()))?
+    } else {
+        default_settings_json()
+    };
+
+    root["ui"] = serde_json::to_value(config).context("failed to serialize ui config")?;
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create settings dir: {}", parent.display()))?;
+    }
+
+    fs::write(
+        path,
+        serde_json::to_string_pretty(&root).context("failed to serialize settings")?,
+    )
+    .with_context(|| format!("failed to write settings file: {}", path.display()))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -148,7 +159,8 @@ mod tests {
         )
         .unwrap();
 
-        let cfg = AppConfig::load(project.path()).unwrap();
+        let path = resolve_settings_path_with_home(project.path(), None).unwrap();
+        let cfg = load_from_path(&path).unwrap();
         assert_eq!(cfg.theme, Theme::Default);
         assert!(cfg.tips);
     }
@@ -156,15 +168,17 @@ mod tests {
     #[test]
     fn save_and_reload_ui_config() {
         let project = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
         let cfg = AppConfig {
             theme: Theme::Dark,
             tips: false,
         };
 
-        let path = cfg.save(project.path()).unwrap();
+        let path = resolve_settings_path_with_home(project.path(), Some(home.path())).unwrap();
+        save_to_path(&cfg, &path).unwrap();
         assert!(path.exists());
 
-        let loaded = AppConfig::load(project.path()).unwrap();
+        let loaded = load_from_path(&path).unwrap();
         assert_eq!(loaded.theme, Theme::Dark);
         assert!(!loaded.tips);
     }

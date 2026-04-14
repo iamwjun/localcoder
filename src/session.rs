@@ -252,18 +252,26 @@ fn now_ts() -> u64 {
 }
 
 fn sessions_project_dir(project_dir: &Path) -> Result<PathBuf> {
+    sessions_project_dir_with_home(project_dir, std::env::var_os("HOME").as_deref().map(Path::new))
+}
+
+fn sessions_project_dir_with_home(project_dir: &Path, home: Option<&Path>) -> Result<PathBuf> {
     let canonical = fs::canonicalize(project_dir)
         .with_context(|| format!("failed to canonicalize path: {}", project_dir.display()))?;
     let mut hasher = DefaultHasher::new();
     canonical.to_string_lossy().hash(&mut hasher);
     let hash = format!("{:016x}", hasher.finish());
 
-    Ok(localcoder_home()?.join("sessions").join(hash))
+    Ok(localcoder_home_with_home(home)?.join("sessions").join(hash))
 }
 
 fn localcoder_home() -> Result<PathBuf> {
-    let home = std::env::var_os("HOME").ok_or_else(|| anyhow!("$HOME is not set"))?;
-    Ok(PathBuf::from(home).join(".localcoder"))
+    localcoder_home_with_home(std::env::var_os("HOME").as_deref().map(Path::new))
+}
+
+fn localcoder_home_with_home(home: Option<&Path>) -> Result<PathBuf> {
+    let home = home.ok_or_else(|| anyhow!("$HOME is not set"))?;
+    Ok(home.join(".localcoder"))
 }
 
 fn generate_session_id() -> String {
@@ -291,11 +299,15 @@ mod tests {
 
     #[test]
     fn store_create_append_and_load() {
-        let fake_home = TempDir::new().unwrap();
-        unsafe { std::env::set_var("HOME", fake_home.path()); }
-
         let project = TempDir::new().unwrap();
-        let store = SessionStore::create(project.path()).unwrap();
+        let fake_home = TempDir::new().unwrap();
+        let path = sessions_project_dir_with_home(project.path(), Some(fake_home.path())).unwrap();
+        fs::create_dir_all(&path).unwrap();
+        let store = SessionStore {
+            id: "test".to_string(),
+            path: path.join("test.jsonl"),
+        };
+        OpenOptions::new().create(true).append(true).open(&store.path).unwrap();
 
         store
             .append_message(&json!({"role":"user","content":"ping"}))
@@ -312,24 +324,32 @@ mod tests {
 
     #[test]
     fn load_latest_returns_some_after_create() {
-        let fake_home = TempDir::new().unwrap();
-        unsafe { std::env::set_var("HOME", fake_home.path()); }
-
         let project = TempDir::new().unwrap();
-        let store = SessionStore::create(project.path()).unwrap();
-        let latest = SessionStore::load_latest(project.path()).unwrap().unwrap();
+        let fake_home = TempDir::new().unwrap();
+        let path = sessions_project_dir_with_home(project.path(), Some(fake_home.path())).unwrap();
+        fs::create_dir_all(&path).unwrap();
+        let store = SessionStore {
+            id: "latest".to_string(),
+            path: path.join("latest.jsonl"),
+        };
+        OpenOptions::new().create(true).append(true).open(&store.path).unwrap();
+        let latest = list_with_home(project.path(), Some(fake_home.path())).unwrap().into_iter().next().unwrap();
 
         assert_eq!(latest.id, store.id);
     }
 
     #[test]
     fn list_returns_sessions() {
-        let fake_home = TempDir::new().unwrap();
-        unsafe { std::env::set_var("HOME", fake_home.path()); }
-
         let project = TempDir::new().unwrap();
-        let store = SessionStore::create(project.path()).unwrap();
-        let sessions = SessionStore::list(project.path()).unwrap();
+        let fake_home = TempDir::new().unwrap();
+        let path = sessions_project_dir_with_home(project.path(), Some(fake_home.path())).unwrap();
+        fs::create_dir_all(&path).unwrap();
+        let store = SessionStore {
+            id: "list".to_string(),
+            path: path.join("list.jsonl"),
+        };
+        OpenOptions::new().create(true).append(true).open(&store.path).unwrap();
+        let sessions = list_with_home(project.path(), Some(fake_home.path())).unwrap();
 
         assert!(!sessions.is_empty());
         assert_eq!(sessions[0].id, store.id);
@@ -337,11 +357,15 @@ mod tests {
 
     #[test]
     fn replace_messages_rewrites_file_with_system_message() {
-        let fake_home = TempDir::new().unwrap();
-        unsafe { std::env::set_var("HOME", fake_home.path()); }
-
         let project = TempDir::new().unwrap();
-        let store = SessionStore::create(project.path()).unwrap();
+        let fake_home = TempDir::new().unwrap();
+        let path = sessions_project_dir_with_home(project.path(), Some(fake_home.path())).unwrap();
+        fs::create_dir_all(&path).unwrap();
+        let store = SessionStore {
+            id: "rewrite".to_string(),
+            path: path.join("rewrite.jsonl"),
+        };
+        OpenOptions::new().create(true).append(true).open(&store.path).unwrap();
         store.append_message(&json!({"role":"user","content":"old"})).unwrap();
 
         store
@@ -355,5 +379,32 @@ mod tests {
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0]["role"], "system");
         assert_eq!(loaded[1]["content"], "new");
+    }
+
+    fn list_with_home(project_dir: &Path, home: Option<&Path>) -> Result<Vec<SessionStore>> {
+        let base = sessions_project_dir_with_home(project_dir, home)?;
+        if !base.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut candidates: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
+        for entry in fs::read_dir(&base)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let modified = entry.metadata().and_then(|m| m.modified()).unwrap_or(UNIX_EPOCH);
+            candidates.push((path, modified));
+        }
+
+        candidates.sort_by(|a, b| b.1.cmp(&a.1));
+        Ok(candidates
+            .into_iter()
+            .map(|(path, _)| SessionStore {
+                id: path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string(),
+                path,
+            })
+            .collect())
     }
 }

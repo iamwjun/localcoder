@@ -35,12 +35,22 @@ pub async fn run_agent_loop(
     registry: &ToolRegistry,
     messages: &mut Vec<Value>,
 ) -> Result<String> {
+    run_agent_loop_with_system_prompt(client, registry, messages, None).await
+}
+
+pub async fn run_agent_loop_with_system_prompt(
+    client: &LLMClient,
+    registry: &ToolRegistry,
+    messages: &mut Vec<Value>,
+    system_prompt: Option<&str>,
+) -> Result<String> {
     let tools = registry.get_schemas();
     let mut final_text = String::new();
 
     loop {
         // ── 1. Call the model ─────────────────────────────────────────────
-        let response = client.call_with_tools(messages, &tools).await?;
+        let request_messages = build_request_messages(messages, system_prompt);
+        let response = client.call_with_tools(&request_messages, &tools).await?;
         final_text = response.text.clone();
 
         // ── 2. Append assistant message to conversation history ───────────
@@ -80,6 +90,20 @@ pub async fn run_agent_loop(
     }
 
     Ok(final_text)
+}
+
+fn build_request_messages(messages: &[Value], system_prompt: Option<&str>) -> Vec<Value> {
+    let mut request_messages = Vec::new();
+    if let Some(prompt) = system_prompt {
+        if !prompt.trim().is_empty() {
+            request_messages.push(json!({
+                "role": "system",
+                "content": prompt
+            }));
+        }
+    }
+    request_messages.extend(messages.iter().cloned());
+    request_messages
 }
 
 /// Build the assistant JSON message from an Ollama response.
@@ -147,5 +171,14 @@ mod tests {
         assert_eq!(msg["content"], "I'll echo this:");
         assert_eq!(tool_calls.len(), 1);
         assert_eq!(tool_calls[0]["function"]["name"], "echo_tool");
+    }
+
+    #[test]
+    fn build_request_messages_prefixes_system_prompt() {
+        let messages = vec![json!({"role":"user","content":"hello"})];
+        let request = build_request_messages(&messages, Some("[持久记忆]\nfoo"));
+        assert_eq!(request.len(), 2);
+        assert_eq!(request[0]["role"], "system");
+        assert_eq!(request[1]["role"], "user");
     }
 }

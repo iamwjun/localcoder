@@ -8,6 +8,7 @@ mod config;
 mod engine;
 mod git;
 mod markdown;
+mod memory;
 mod repl;
 mod session;
 mod tools;
@@ -97,12 +98,34 @@ async fn one_shot(prompt: &str, registry: tools::ToolRegistry) -> Result<()> {
     println!();
 
     let client = api::LLMClient::new()?;
+    let cwd = env::current_dir()?;
+    let mut memory_store = memory::MemoryStore::new(&cwd, 0)?;
+    let system_prompt = memory_store.build_system_prompt()?;
     println!("{}", "🤖 Model is thinking...\n".yellow());
 
     let mut messages = vec![serde_json::json!({"role": "user", "content": prompt})];
 
-    match engine::run_agent_loop(&client, &registry, &mut messages).await {
+    match engine::run_agent_loop_with_system_prompt(
+        &client,
+        &registry,
+        &mut messages,
+        system_prompt.as_deref(),
+    )
+    .await
+    {
         Ok(_) => {
+            let saved = memory_store.extract_and_save(&client, &messages).await?;
+            if !saved.is_empty() {
+                println!(
+                    "{} {}",
+                    "🧠 Saved memories:".cyan().bold(),
+                    saved
+                        .iter()
+                        .map(|m| format!("[{}] {}", m.memory_type, m.name))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
             println!("\n");
             println!("{}", "✅ Done".green());
             Ok(())
