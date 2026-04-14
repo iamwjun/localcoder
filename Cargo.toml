@@ -1,7 +1,11 @@
 [package]
 name = "localcoder"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
+description = "oxink."
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/iamwjun/localcoder"
 
 [dependencies]
 # HTTP client

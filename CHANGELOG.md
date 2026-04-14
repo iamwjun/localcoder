@@ -1,6 +1,24 @@
 # Changelog
 
-<!-- last-commit: b6b2573 -->
+<!-- last-commit: 842fad0 -->
+
+## v0.1.6 - 2026-04-14
+
+| Commit | Description |
+|--------|-------------|
+| `842fad0` | feat: lsp integration |
+| `86bce39` | feat: output styles |
+| `9d02501` | docs: mcp integration |
+| `febac2d` | docs: multi provider |
+| `5cfba68` | docs: cost-tracking |
+| `57086ca` | feat: network tools |
+| `8d76820` | feat: plan mode |
+| `443b9c2` | feat: skill system |
+| `4f9f8be` | docs: sub agents |
+| `788c3f1` | feat: memory system |
+| `c8be69b` | feat: git integration |
+| `07be41e` | update CHANGELOG.md |
+
 
 ## v0.1.5 - 2026-04-14
 
