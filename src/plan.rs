@@ -194,6 +194,8 @@ impl PlanManager {
                 "Read",
                 "Glob",
                 "Grep",
+                "WebFetch",
+                "WebSearch",
                 "EnterPlanMode",
                 "ExitPlanMode",
                 "TodoWrite",

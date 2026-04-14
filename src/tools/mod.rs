@@ -28,6 +28,8 @@ pub mod grep_tool;
 pub mod bash_tool;
 pub mod plan_tools;
 pub mod skill_tool;
+pub mod web_fetch;
+pub mod web_search;
 
 pub use file_edit::EditTool;
 pub use file_read::ReadTool;
@@ -37,6 +39,8 @@ pub use grep_tool::GrepTool;
 pub use bash_tool::BashTool;
 pub use plan_tools::{EnterPlanModeTool, ExitPlanModeTool, TodoWriteTool};
 pub use skill_tool::SkillTool;
+pub use web_fetch::WebFetchTool;
+pub use web_search::WebSearchTool;
 
 use crate::plan::PlanManager;
 use crate::skills::SkillManager;

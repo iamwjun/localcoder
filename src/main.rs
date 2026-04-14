@@ -42,6 +42,8 @@ async fn main() -> Result<()> {
     registry.register(tools::GlobTool);
     registry.register(tools::GrepTool);
     registry.register(tools::BashTool);
+    registry.register(tools::WebFetchTool);
+    registry.register(tools::WebSearchTool);
     registry.register(tools::EnterPlanModeTool::new(plan_manager.clone()));
     registry.register(tools::ExitPlanModeTool::new(plan_manager.clone()));
     registry.register(tools::TodoWriteTool::new(plan_manager.clone()));
@@ -119,6 +121,18 @@ async fn one_shot(
     if prompt.trim() == "/skills" {
         println!("{}", "🧩 Available skills:".cyan().bold());
         println!("{}", skill_manager.render_user_invocable_list()?);
+        return Ok(());
+    }
+
+    if let Some(query) = parse_command_arg(prompt, "/web") {
+        println!("{}", "🌐 Web search:".cyan().bold());
+        println!("{}", tools::web_search::search_web(query, None, 5).await?);
+        return Ok(());
+    }
+
+    if let Some(url) = parse_command_arg(prompt, "/fetch") {
+        println!("{}", "🌐 Web fetch:".cyan().bold());
+        println!("{}", tools::web_fetch::fetch_url(url, None, 12_000).await?);
         return Ok(());
     }
 
@@ -228,6 +242,16 @@ mod tests {
     fn parse_slash_skill_rejects_non_slash_input() {
         assert_eq!(parse_slash_skill("simplify"), None);
     }
+
+    #[test]
+    fn parse_command_arg_extracts_argument() {
+        assert_eq!(parse_command_arg("/web rust async", "/web"), Some("rust async"));
+    }
+
+    #[test]
+    fn parse_command_arg_rejects_partial_prefix() {
+        assert_eq!(parse_command_arg("/webbing x", "/web"), None);
+    }
 }
 
 fn merge_system_prompts<const N: usize>(parts: [Option<String>; N]) -> Option<String> {
@@ -256,4 +280,21 @@ fn parse_slash_skill(input: &str) -> Option<(&str, &str)> {
         Some((name, args)) => Some((name, args.trim())),
         None => Some((rest, "")),
     }
+}
+
+fn parse_command_arg<'a>(input: &'a str, command: &str) -> Option<&'a str> {
+    if !input.starts_with(command) {
+        return None;
+    }
+
+    let rest = &input[command.len()..];
+    if rest.is_empty() {
+        return Some("");
+    }
+
+    if rest.starts_with(char::is_whitespace) {
+        return Some(rest.trim());
+    }
+
+    None
 }

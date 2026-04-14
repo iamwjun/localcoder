@@ -12,6 +12,8 @@ use crate::plan::PlanManager;
 use crate::session::SessionStore;
 use crate::skills::SkillManager;
 use crate::tools::ToolRegistry;
+use crate::tools::web_fetch::fetch_url;
+use crate::tools::web_search::search_web;
 use crate::types::ConversationHistory;
 use anyhow::{Context, Result};
 use colored::*;
@@ -136,6 +138,20 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
                     if command_arg(input, "/memory").is_some() {
                         if let Err(e) = handle_memory_command(&memory_store) {
                             eprintln!("\n{} {}", "❌ Memory failed:".red().bold(), e);
+                        }
+                        continue;
+                    }
+
+                    if let Some(query) = command_arg(input, "/web") {
+                        if let Err(e) = handle_web_search_command(query).await {
+                            eprintln!("\n{} {}", "❌ Web search failed:".red().bold(), e);
+                        }
+                        continue;
+                    }
+
+                    if let Some(url) = command_arg(input, "/fetch") {
+                        if let Err(e) = handle_web_fetch_command(url).await {
+                            eprintln!("\n{} {}", "❌ Web fetch failed:".red().bold(), e);
                         }
                         continue;
                     }
@@ -315,6 +331,8 @@ fn print_instructions(client: &LLMClient, app_config: &AppConfig) {
         println!("  - Type {} to review current diff", "/review".yellow());
         println!("  - Type {} to generate and run git commit", "/commit".yellow());
         println!("  - Type {} to list saved memories", "/memory".yellow());
+        println!("  - Type {} to run a web search", "/web <query>".yellow());
+        println!("  - Type {} to fetch a web page", "/fetch <url>".yellow());
         println!("  - Type {} to show or toggle plan mode", "/plan".yellow());
         println!("  - Type {} to list available skills", "/skills".yellow());
         println!("  - Type {} to invoke a user skill", "/<skill-name>".yellow());
@@ -402,6 +420,8 @@ fn print_help() {
     println!("  {}            - Review current git diff with the model", "/review".yellow());
     println!("  {}    - Generate a commit message and commit", "/commit [title]".yellow());
     println!("  {}           - List saved memories", "/memory".yellow());
+    println!("  {}          - Search the web directly", "/web <query>".yellow());
+    println!("  {}         - Fetch a public web page", "/fetch <url>".yellow());
     println!("  {}             - Show plan status", "/plan".yellow());
     println!("  {}        - Enable plan mode manually", "/plan on".yellow());
     println!("  {}       - Disable plan mode manually", "/plan off".yellow());
@@ -565,6 +585,24 @@ async fn handle_skill_command(
 fn handle_memory_command(memory_store: &MemoryStore) -> Result<()> {
     println!("\n{}", "🧠 Saved memories:".cyan().bold());
     println!("{}", memory_store.render_memory_list()?);
+    Ok(())
+}
+
+async fn handle_web_search_command(query: &str) -> Result<()> {
+    if query.trim().is_empty() {
+        anyhow::bail!("please provide a search query");
+    }
+    println!("\n{}", "🌐 Web search results:".cyan().bold());
+    println!("{}", search_web(query, None, 5).await?);
+    Ok(())
+}
+
+async fn handle_web_fetch_command(url: &str) -> Result<()> {
+    if url.trim().is_empty() {
+        anyhow::bail!("please provide a URL");
+    }
+    println!("\n{}", "🌐 Web page fetch:".cyan().bold());
+    println!("{}", fetch_url(url, None, 12_000).await?);
     Ok(())
 }
 
