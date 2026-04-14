@@ -1,6 +1,17 @@
 # Changelog
 
-<!-- last-commit: 32b726c -->
+<!-- last-commit: b6b2573 -->
+
+## v0.1.5 - 2026-04-14
+
+| Commit | Description |
+|--------|-------------|
+| `b6b2573` | feat: context compaction |
+| `f4db4ff` | feat: config system |
+| `0d17927` | feat: session persistence |
+| `1768b47` | feat: bash tool |
+| `cb45aa1` | update CHANGELOG.md |
+
 
 ## v0.1.4 - 2026-04-13
 
