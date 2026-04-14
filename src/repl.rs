@@ -8,6 +8,7 @@ use crate::config::{AppConfig, Theme};
 use crate::engine;
 use crate::git;
 use crate::memory::MemoryStore;
+use crate::plan::PlanManager;
 use crate::session::SessionStore;
 use crate::skills::SkillManager;
 use crate::tools::ToolRegistry;
@@ -34,6 +35,7 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
     print_instructions(&client, &app_config);
     let (mut session, mut messages) = init_session(&cwd, resume)?;
     let mut memory_store = MemoryStore::new(&cwd, visible_message_count(&messages))?;
+    let plan_manager = registry.plan_manager();
     let skill_manager = registry.skill_manager();
     if let Some(manager) = &skill_manager {
         manager.set_session_id(session.as_ref().map(|s| s.id.as_str()));
@@ -134,6 +136,17 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
                     if command_arg(input, "/memory").is_some() {
                         if let Err(e) = handle_memory_command(&memory_store) {
                             eprintln!("\n{} {}", "❌ Memory failed:".red().bold(), e);
+                        }
+                        continue;
+                    }
+
+                    if let Some(args) = command_arg(input, "/plan") {
+                        if let Some(manager) = plan_manager.as_ref() {
+                            if let Err(e) = handle_plan_command(manager, args) {
+                                eprintln!("\n{} {}", "❌ Plan failed:".red().bold(), e);
+                            }
+                        } else {
+                            eprintln!("\n{}", "❌ Plan mode is not initialized".red().bold());
                         }
                         continue;
                     }
@@ -302,6 +315,7 @@ fn print_instructions(client: &LLMClient, app_config: &AppConfig) {
         println!("  - Type {} to review current diff", "/review".yellow());
         println!("  - Type {} to generate and run git commit", "/commit".yellow());
         println!("  - Type {} to list saved memories", "/memory".yellow());
+        println!("  - Type {} to show or toggle plan mode", "/plan".yellow());
         println!("  - Type {} to list available skills", "/skills".yellow());
         println!("  - Type {} to invoke a user skill", "/<skill-name>".yellow());
         println!("  - Type {} to open config menu", "/config".yellow());
@@ -388,6 +402,10 @@ fn print_help() {
     println!("  {}            - Review current git diff with the model", "/review".yellow());
     println!("  {}    - Generate a commit message and commit", "/commit [title]".yellow());
     println!("  {}           - List saved memories", "/memory".yellow());
+    println!("  {}             - Show plan status", "/plan".yellow());
+    println!("  {}        - Enable plan mode manually", "/plan on".yellow());
+    println!("  {}       - Disable plan mode manually", "/plan off".yellow());
+    println!("  {}     - Clear persisted todo list", "/plan clear".yellow());
     println!("  {}           - List available user skills", "/skills".yellow());
     println!("  {}     - Invoke a user skill by slash command", "/<skill-name> [args]".yellow());
     println!(
@@ -547,6 +565,32 @@ async fn handle_skill_command(
 fn handle_memory_command(memory_store: &MemoryStore) -> Result<()> {
     println!("\n{}", "🧠 Saved memories:".cyan().bold());
     println!("{}", memory_store.render_memory_list()?);
+    Ok(())
+}
+
+fn handle_plan_command(plan_manager: &PlanManager, args: &str) -> Result<()> {
+    let arg = args.trim().to_ascii_lowercase();
+    match arg.as_str() {
+        "" => {
+            println!("\n{}", "📋 Plan Status:".cyan().bold());
+            println!("{}", plan_manager.render_status());
+        }
+        "on" | "enter" => {
+            println!("\n{}", "📋 Plan Mode Enabled".cyan().bold());
+            println!("{}", plan_manager.enter_mode(None)?);
+        }
+        "off" | "exit" => {
+            println!("\n{}", "📋 Plan Mode Disabled".cyan().bold());
+            println!("{}", plan_manager.exit_mode(None)?);
+        }
+        "clear" => {
+            println!("\n{}", "📋 Todo List Cleared".cyan().bold());
+            println!("{}", plan_manager.clear_todos()?);
+        }
+        _ => {
+            println!("{}", "Unknown /plan option. Use /plan, /plan on, /plan off, or /plan clear".yellow());
+        }
+    }
     Ok(())
 }
 

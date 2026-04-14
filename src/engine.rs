@@ -63,7 +63,7 @@ pub async fn run_agent_loop_with_system_prompt(
             println!();
             let mut tool_results: Vec<Value> = Vec::new();
 
-            for call in &response.tool_uses {
+            for call in prioritize_tool_calls(&response.tool_uses) {
                 println!("{}", format!("▶ Tool: {}", call.name).cyan());
 
                 let (content, is_error) =
@@ -93,6 +93,21 @@ pub async fn run_agent_loop_with_system_prompt(
     result
 }
 
+fn prioritize_tool_calls(calls: &[ToolUseCall]) -> Vec<ToolUseCall> {
+    let mut ordered = calls.to_vec();
+    ordered.sort_by_key(|call| tool_priority(&call.name));
+    ordered
+}
+
+fn tool_priority(name: &str) -> u8 {
+    match name {
+        "EnterPlanMode" => 0,
+        "ExitPlanMode" => 0,
+        "skill_tool" => 0,
+        _ => 1,
+    }
+}
+
 fn build_request_messages(
     registry: &ToolRegistry,
     messages: &[Value],
@@ -107,6 +122,11 @@ fn build_request_messages(
     if let Some(active_skill) = registry.active_skill_prompt() {
         if !active_skill.trim().is_empty() {
             parts.push(active_skill);
+        }
+    }
+    if let Some(active_plan) = registry.active_plan_prompt() {
+        if !active_plan.trim().is_empty() {
+            parts.push(active_plan);
         }
     }
 
@@ -150,6 +170,7 @@ fn build_assistant_message(text: &str, tool_uses: &[ToolUseCall]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plan::PlanManager;
     use crate::skills::SkillManager;
     use crate::types::ToolUseCall;
     use tempfile::TempDir;
@@ -214,5 +235,43 @@ mod tests {
         let content = request[0]["content"].as_str().unwrap();
         assert!(content.contains("[持久记忆]"));
         assert!(content.contains("[技能 simplify]"));
+    }
+
+    #[test]
+    fn build_request_messages_appends_plan_prompt() {
+        let cwd = TempDir::new().unwrap();
+        let manager = PlanManager::new(cwd.path()).unwrap();
+        manager.enter_mode(None).unwrap();
+
+        let mut registry = ToolRegistry::new();
+        registry.attach_plan_manager(manager);
+
+        let messages = vec![json!({"role":"user","content":"hello"})];
+        let request = build_request_messages(&registry, &messages, None);
+        let content = request[0]["content"].as_str().unwrap();
+        assert!(content.contains("[计划状态]"));
+        assert!(content.contains("mode: planning"));
+    }
+
+    #[test]
+    fn prioritize_tool_calls_moves_control_tools_first() {
+        let ordered = prioritize_tool_calls(&[
+            ToolUseCall {
+                name: "Edit".into(),
+                arguments: json!({}),
+            },
+            ToolUseCall {
+                name: "EnterPlanMode".into(),
+                arguments: json!({}),
+            },
+            ToolUseCall {
+                name: "skill_tool".into(),
+                arguments: json!({}),
+            },
+        ]);
+
+        assert_eq!(ordered[0].name, "EnterPlanMode");
+        assert_eq!(ordered[1].name, "skill_tool");
+        assert_eq!(ordered[2].name, "Edit");
     }
 }

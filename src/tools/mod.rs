@@ -26,6 +26,7 @@ pub mod file_write;
 pub mod glob_tool;
 pub mod grep_tool;
 pub mod bash_tool;
+pub mod plan_tools;
 pub mod skill_tool;
 
 pub use file_edit::EditTool;
@@ -34,8 +35,10 @@ pub use file_write::WriteTool;
 pub use glob_tool::GlobTool;
 pub use grep_tool::GrepTool;
 pub use bash_tool::BashTool;
+pub use plan_tools::{EnterPlanModeTool, ExitPlanModeTool, TodoWriteTool};
 pub use skill_tool::SkillTool;
 
+use crate::plan::PlanManager;
 use crate::skills::SkillManager;
 use anyhow::{Result, anyhow};
 use colored::*;
@@ -70,6 +73,7 @@ use std::future::Future;
 /// Registry that owns all registered tools and routes model tool calls.
 pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn ToolBoxed>>,
+    plan_manager: Option<PlanManager>,
     skill_manager: Option<SkillManager>,
 }
 
@@ -107,8 +111,17 @@ impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
+            plan_manager: None,
             skill_manager: None,
         }
+    }
+
+    pub fn attach_plan_manager(&mut self, plan_manager: PlanManager) {
+        self.plan_manager = Some(plan_manager);
+    }
+
+    pub fn plan_manager(&self) -> Option<PlanManager> {
+        self.plan_manager.clone()
     }
 
     pub fn attach_skill_manager(&mut self, skill_manager: SkillManager) {
@@ -190,6 +203,12 @@ impl ToolRegistry {
             .and_then(|manager| manager.active_prompt())
     }
 
+    pub fn active_plan_prompt(&self) -> Option<String> {
+        self.plan_manager
+            .as_ref()
+            .and_then(|manager| manager.build_system_prompt())
+    }
+
     pub fn clear_active_skill(&self) {
         if let Some(manager) = &self.skill_manager {
             manager.clear_active();
@@ -197,9 +216,16 @@ impl ToolRegistry {
     }
 
     fn active_allowed_tools(&self) -> Option<HashSet<String>> {
-        self.skill_manager
+        let skill_allowed = self
+            .skill_manager
             .as_ref()
-            .and_then(|manager| manager.active_allowed_tools())
+            .and_then(|manager| manager.active_allowed_tools());
+        let plan_allowed = self
+            .plan_manager
+            .as_ref()
+            .and_then(|manager| manager.allowed_tools());
+
+        merge_allowed_tools(skill_allowed, plan_allowed)
     }
 }
 
@@ -213,6 +239,17 @@ fn tool_is_allowed(name: &str, allowed: Option<&HashSet<String>>) -> bool {
     match allowed {
         Some(allowed) => allowed.contains(&name.to_ascii_lowercase()),
         None => true,
+    }
+}
+
+fn merge_allowed_tools(
+    left: Option<HashSet<String>>,
+    right: Option<HashSet<String>>,
+) -> Option<HashSet<String>> {
+    match (left, right) {
+        (None, None) => None,
+        (Some(set), None) | (None, Some(set)) => Some(set),
+        (Some(left), Some(right)) => Some(left.intersection(&right).cloned().collect()),
     }
 }
 
@@ -358,5 +395,13 @@ mod tests {
         let allowed = HashSet::from([String::from("read")]);
         assert!(super::tool_is_allowed("Read", Some(&allowed)));
         assert!(!super::tool_is_allowed("Write", Some(&allowed)));
+    }
+
+    #[test]
+    fn merge_allowed_tools_intersects_sets() {
+        let left = HashSet::from([String::from("read"), String::from("glob")]);
+        let right = HashSet::from([String::from("read"), String::from("grep")]);
+        let merged = super::merge_allowed_tools(Some(left), Some(right)).unwrap();
+        assert_eq!(merged, HashSet::from([String::from("read")]));
     }
 }

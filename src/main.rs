@@ -9,6 +9,7 @@ mod engine;
 mod git;
 mod markdown;
 mod memory;
+mod plan;
 mod repl;
 mod session;
 mod skills;
@@ -29,8 +30,10 @@ async fn main() -> Result<()> {
     print_banner();
     println!("{}", "🦙 Using Ollama".green().bold());
 
+    let plan_manager = plan::PlanManager::new(&cwd)?;
     let skill_manager = skills::SkillManager::new(&cwd)?;
     let mut registry = tools::ToolRegistry::new();
+    registry.attach_plan_manager(plan_manager.clone());
     registry.attach_skill_manager(skill_manager.clone());
     registry.register(tools::EchoTool);
     registry.register(tools::ReadTool);
@@ -39,6 +42,9 @@ async fn main() -> Result<()> {
     registry.register(tools::GlobTool);
     registry.register(tools::GrepTool);
     registry.register(tools::BashTool);
+    registry.register(tools::EnterPlanModeTool::new(plan_manager.clone()));
+    registry.register(tools::ExitPlanModeTool::new(plan_manager.clone()));
+    registry.register(tools::TodoWriteTool::new(plan_manager.clone()));
     registry.register(tools::SkillTool::new(skill_manager.clone()));
 
     let args: Vec<String> = env::args().skip(1).collect();
@@ -48,7 +54,7 @@ async fn main() -> Result<()> {
         repl::start_repl(registry, resume_target).await?;
     } else {
         let prompt = prompt_args.join(" ");
-        one_shot(&prompt, registry, skill_manager).await?;
+        one_shot(&prompt, registry, plan_manager, skill_manager).await?;
     }
 
     Ok(())
@@ -101,8 +107,15 @@ fn print_banner() {
 async fn one_shot(
     prompt: &str,
     registry: tools::ToolRegistry,
+    plan_manager: plan::PlanManager,
     skill_manager: skills::SkillManager,
 ) -> Result<()> {
+    if prompt.trim() == "/plan" {
+        println!("{}", "📋 Plan Status:".cyan().bold());
+        println!("{}", plan_manager.render_status());
+        return Ok(());
+    }
+
     if prompt.trim() == "/skills" {
         println!("{}", "🧩 Available skills:".cyan().bold());
         println!("{}", skill_manager.render_user_invocable_list()?);
@@ -217,7 +230,7 @@ mod tests {
     }
 }
 
-fn merge_system_prompts(parts: [Option<String>; 2]) -> Option<String> {
+fn merge_system_prompts<const N: usize>(parts: [Option<String>; N]) -> Option<String> {
     let joined = parts
         .into_iter()
         .flatten()
