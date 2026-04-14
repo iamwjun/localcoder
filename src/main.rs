@@ -6,6 +6,7 @@ mod api;
 mod compact;
 mod config;
 mod engine;
+mod git;
 mod markdown;
 mod repl;
 mod session;

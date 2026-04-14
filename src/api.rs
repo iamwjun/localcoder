@@ -279,6 +279,44 @@ impl LLMClient {
         Ok(response.message.content.unwrap_or_default())
     }
 
+    pub async fn complete_prompt(&self, prompt: &str, max_tokens: u32) -> Result<String> {
+        let body = json!({
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            "stream": false,
+            "options": {
+                "num_predict": max_tokens
+            }
+        });
+
+        let response = self
+            .client
+            .post(format!("{}/api/chat", self.base_url))
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .context("Ollama prompt request failed")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            anyhow::bail!("Ollama returned error {}: {}", status, error_text);
+        }
+
+        let response: OllamaChatResponse = response
+            .json()
+            .await
+            .context("failed to parse Ollama prompt response")?;
+
+        Ok(response.message.content.unwrap_or_default())
+    }
+
     /// Set model.
     pub fn set_model(&mut self, model: String) {
         self.model = model;

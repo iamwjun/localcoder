@@ -6,6 +6,7 @@ use crate::api::LLMClient;
 use crate::compact;
 use crate::config::{AppConfig, Theme};
 use crate::engine;
+use crate::git;
 use crate::session::SessionStore;
 use crate::tools::ToolRegistry;
 use crate::types::ConversationHistory;
@@ -53,7 +54,7 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
                 let _ = rl.add_history_entry(input);
 
                 if input.starts_with('/') {
-                    if input.eq_ignore_ascii_case("/resume") {
+                    if command_arg(input, "/resume").is_some() {
                         if let Err(e) =
                             handle_resume_command(
                                 &mut rl,
@@ -68,14 +69,14 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
                         continue;
                     }
 
-                    if input.eq_ignore_ascii_case("/model") {
+                    if command_arg(input, "/model").is_some() {
                         if let Err(e) = select_model(&mut rl, &mut client).await {
                             eprintln!("\n{} {}", "❌ Failed to update model:".red().bold(), e);
                         }
                         continue;
                     }
 
-                    if input.eq_ignore_ascii_case("/config") {
+                    if command_arg(input, "/config").is_some() {
                         if let Err(e) = handle_config_command(&mut rl, &cwd, &mut app_config) {
                             eprintln!("\n{} {}", "❌ Config failed:".red().bold(), e);
                         } else {
@@ -84,7 +85,7 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
                         continue;
                     }
 
-                    if input.eq_ignore_ascii_case("/compact") {
+                    if command_arg(input, "/compact").is_some() {
                         if let Err(e) = handle_manual_compact(
                             &client,
                             &cwd,
@@ -95,6 +96,28 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
                         .await
                         {
                             eprintln!("\n{} {}", "❌ Compact failed:".red().bold(), e);
+                        }
+                        continue;
+                    }
+
+                    if command_arg(input, "/diff").is_some() {
+                        if let Err(e) = handle_diff_command(&cwd) {
+                            eprintln!("\n{} {}", "❌ Diff failed:".red().bold(), e);
+                        }
+                        continue;
+                    }
+
+                    if command_arg(input, "/review").is_some() {
+                        if let Err(e) = handle_review_command(&client, &cwd).await {
+                            eprintln!("\n{} {}", "❌ Review failed:".red().bold(), e);
+                        }
+                        continue;
+                    }
+
+                    if let Some(title) = command_arg(input, "/commit") {
+                        let title = if title.is_empty() { None } else { Some(title) };
+                        if let Err(e) = handle_commit_command(&mut rl, &client, &cwd, title).await {
+                            eprintln!("\n{} {}", "❌ Commit failed:".red().bold(), e);
                         }
                         continue;
                     }
@@ -228,6 +251,9 @@ fn print_instructions(client: &LLMClient, app_config: &AppConfig) {
         );
         println!("  - Type {} to resume previous session", "/resume".yellow());
         println!("  - Type {} to compact long context", "/compact".yellow());
+        println!("  - Type {} to show git diff", "/diff".yellow());
+        println!("  - Type {} to review current diff", "/review".yellow());
+        println!("  - Type {} to generate and run git commit", "/commit".yellow());
         println!("  - Type {} to open config menu", "/config".yellow());
         println!("  - Type {} to switch Ollama model", "/model".yellow());
         println!("  - Type {} to show help", "/help".yellow());
@@ -308,6 +334,9 @@ fn print_help() {
     );
     println!("  {}           - List and resume a previous session", "/resume".yellow());
     println!("  {}           - Manually compact conversation context", "/compact".yellow());
+    println!("  {}              - Show current git diff", "/diff".yellow());
+    println!("  {}            - Review current git diff with the model", "/review".yellow());
+    println!("  {}    - Generate a commit message and commit", "/commit [title]".yellow());
     println!(
         "  {}           - Configure UI settings (Theme / Tips)",
         "/config".yellow()
@@ -597,6 +626,123 @@ fn print_loaded_history(messages: &[Value]) {
     }
 }
 
+fn command_arg<'a>(input: &'a str, command: &str) -> Option<&'a str> {
+    if !input.starts_with(command) {
+        return None;
+    }
+
+    let rest = &input[command.len()..];
+    if rest.is_empty() {
+        return Some("");
+    }
+
+    if rest.starts_with(char::is_whitespace) {
+        return Some(rest.trim());
+    }
+
+    None
+}
+
+fn handle_diff_command(cwd: &std::path::Path) -> Result<()> {
+    git::ensure_git_repo(cwd)?;
+    let diff = git::get_combined_diff(cwd)?;
+    if diff.trim().is_empty() {
+        println!("{}", "ℹ️ No git changes to show".yellow());
+    } else {
+        println!("\n{}", "📄 Current diff:".cyan().bold());
+        println!("{}", diff);
+    }
+    Ok(())
+}
+
+async fn handle_review_command(client: &LLMClient, cwd: &std::path::Path) -> Result<()> {
+    git::ensure_git_repo(cwd)?;
+    let diff = git::get_combined_diff(cwd)?;
+    if diff.trim().is_empty() {
+        println!("{}", "ℹ️ No git changes to review".yellow());
+        return Ok(());
+    }
+
+    println!("{}", "🔍 Reviewing diff...\n".yellow());
+    let prompt = format!(
+        "请审查以下代码变更，重点关注：\n1. 潜在 bug 和行为回归\n2. 安全风险\n3. 测试缺口\n4. 可维护性问题\n\n请先给出 findings，再给出简短总结。\n\n变更内容：\n{}",
+        truncate_preview(&diff, 12_000)
+    );
+    let review = client.complete_prompt(&prompt, 1200).await?;
+    println!("{}", review);
+    Ok(())
+}
+
+async fn handle_commit_command(
+    rl: &mut DefaultEditor,
+    client: &LLMClient,
+    cwd: &std::path::Path,
+    title: Option<&str>,
+) -> Result<()> {
+    git::ensure_git_repo(cwd)?;
+
+    let mut diff = git::get_staged_diff(cwd)?;
+    let had_staged = !diff.trim().is_empty();
+    if !had_staged {
+        diff = git::get_working_diff(cwd)?;
+    }
+
+    if diff.trim().is_empty() {
+        println!("{}", "ℹ️ No git changes to commit".yellow());
+        return Ok(());
+    }
+
+    let suggested = if let Some(title) = title {
+        title.trim().to_string()
+    } else {
+        println!("{}", "📝 Generating commit message...\n".yellow());
+        let prompt = format!(
+            "请根据以下 git diff 生成一个简洁的 Conventional Commit 风格提交消息。只返回一行提交消息，不要解释。\n\nDiff:\n{}",
+            truncate_preview(&diff, 12_000)
+        );
+        client
+            .complete_prompt(&prompt, 120)
+            .await?
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    };
+
+    if suggested.is_empty() {
+        anyhow::bail!("model returned an empty commit message");
+    }
+
+    println!("{} {}", "Suggested commit message:".cyan().bold(), suggested.white());
+    let confirm = rl.readline(&format!("{} ", "Commit with this message? [Y/n/e] >".cyan().bold()))?;
+    let confirm = confirm.trim().to_lowercase();
+
+    let final_message = match confirm.as_str() {
+        "" | "y" | "yes" => suggested,
+        "e" | "edit" => {
+            let edited = rl.readline(&format!("{} ", "Enter commit message >".cyan().bold()))?;
+            let edited = edited.trim().to_string();
+            if edited.is_empty() {
+                println!("{}", "Commit cancelled".yellow());
+                return Ok(());
+            }
+            edited
+        }
+        _ => {
+            println!("{}", "Commit cancelled".yellow());
+            return Ok(());
+        }
+    };
+
+    if !had_staged {
+        git::stage_all(cwd)?;
+    }
+    git::commit(cwd, &final_message)?;
+    println!("{} {}", "✅ Committed:".green(), final_message.white());
+    Ok(())
+}
+
 async fn select_model(rl: &mut DefaultEditor, client: &mut LLMClient) -> Result<()> {
     let models = client.list_models().await?;
     if models.is_empty() {
@@ -738,5 +884,20 @@ mod tests {
         ];
         let h = rebuild_display_history(&messages);
         assert_eq!(h.len(), 2);
+    }
+
+    #[test]
+    fn command_arg_matches_exact_command() {
+        assert_eq!(command_arg("/commit", "/commit"), Some(""));
+    }
+
+    #[test]
+    fn command_arg_extracts_argument() {
+        assert_eq!(command_arg("/commit feat: add git", "/commit"), Some("feat: add git"));
+    }
+
+    #[test]
+    fn command_arg_rejects_prefix_without_separator() {
+        assert_eq!(command_arg("/commitment", "/commit"), None);
     }
 }
