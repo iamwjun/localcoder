@@ -8,6 +8,7 @@ use crate::config::{AppConfig, Theme};
 use crate::engine;
 use crate::git;
 use crate::memory::MemoryStore;
+use crate::output_style::OutputStyleManager;
 use crate::plan::PlanManager;
 use crate::session::SessionStore;
 use crate::skills::SkillManager;
@@ -34,6 +35,7 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
     let mut client = LLMClient::new()?;
     let cwd = env::current_dir().context("failed to resolve current directory")?;
     let mut app_config = AppConfig::load(&cwd)?;
+    let output_style_manager = OutputStyleManager::new(&cwd);
     print_instructions(&client, &app_config);
     let (mut session, mut messages) = init_session(&cwd, resume)?;
     let mut memory_store = MemoryStore::new(&cwd, visible_message_count(&messages))?;
@@ -142,6 +144,25 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
                         continue;
                     }
 
+                    if let Some(style_name) = command_arg(input, "/output-style") {
+                        match handle_output_style_command(
+                            &cwd,
+                            &output_style_manager,
+                            &mut app_config,
+                            style_name,
+                        ) {
+                            Ok(changed) => {
+                                if changed {
+                                    print_instructions(&client, &app_config);
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("\n{} {}", "❌ Output style failed:".red().bold(), e);
+                            }
+                        }
+                        continue;
+                    }
+
                     if let Some(query) = command_arg(input, "/web") {
                         if let Err(e) = handle_web_search_command(query).await {
                             eprintln!("\n{} {}", "❌ Web search failed:".red().bold(), e);
@@ -185,6 +206,8 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
                                     if let Err(e) = handle_skill_command(
                                         &client,
                                         &registry,
+                                        &output_style_manager,
+                                        &app_config,
                                         manager,
                                         &cwd,
                                         &mut session,
@@ -218,6 +241,8 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
                 if let Err(e) = run_user_turn(
                     &client,
                     &registry,
+                    &output_style_manager,
+                    &app_config,
                     skill_manager.as_ref(),
                     &cwd,
                     &mut session,
@@ -331,6 +356,7 @@ fn print_instructions(client: &LLMClient, app_config: &AppConfig) {
         println!("  - Type {} to review current diff", "/review".yellow());
         println!("  - Type {} to generate and run git commit", "/commit".yellow());
         println!("  - Type {} to list saved memories", "/memory".yellow());
+        println!("  - Type {} to list or switch output styles", "/output-style".yellow());
         println!("  - Type {} to run a web search", "/web <query>".yellow());
         println!("  - Type {} to fetch a web page", "/fetch <url>".yellow());
         println!("  - Type {} to show or toggle plan mode", "/plan".yellow());
@@ -350,6 +376,11 @@ fn print_instructions(client: &LLMClient, app_config: &AppConfig) {
         "⚙️  UI:".cyan().bold(),
         app_config.theme.to_string().white(),
         if app_config.tips { "on".green() } else { "off".red() }
+    );
+    println!(
+        "{} {}",
+        "🎯 Output Style:".cyan().bold(),
+        app_config.output_style.white()
     );
     println!(
         "{} {}",
@@ -420,6 +451,7 @@ fn print_help() {
     println!("  {}            - Review current git diff with the model", "/review".yellow());
     println!("  {}    - Generate a commit message and commit", "/commit [title]".yellow());
     println!("  {}           - List saved memories", "/memory".yellow());
+    println!("  {}      - List or switch output styles", "/output-style [name]".yellow());
     println!("  {}          - Search the web directly", "/web <query>".yellow());
     println!("  {}         - Fetch a public web page", "/fetch <url>".yellow());
     println!("  {}             - Show plan status", "/plan".yellow());
@@ -462,6 +494,8 @@ async fn maybe_auto_compact(
 async fn run_user_turn(
     client: &LLMClient,
     registry: &ToolRegistry,
+    output_style_manager: &OutputStyleManager,
+    app_config: &AppConfig,
     skill_manager: Option<&SkillManager>,
     cwd: &std::path::Path,
     session: &mut Option<SessionStore>,
@@ -493,7 +527,8 @@ async fn run_user_turn(
         maybe_auto_compact(client, session, messages, display_history).await?;
 
         let before_len = messages.len();
-        let system_prompt = build_base_system_prompt(memory_store, skill_manager)?;
+        let system_prompt =
+            build_base_system_prompt(memory_store, output_style_manager, app_config, skill_manager)?;
 
         match engine::run_agent_loop_with_system_prompt(
             client,
@@ -540,6 +575,8 @@ async fn run_user_turn(
 async fn handle_skill_command(
     client: &LLMClient,
     registry: &ToolRegistry,
+    output_style_manager: &OutputStyleManager,
+    app_config: &AppConfig,
     skill_manager: &SkillManager,
     cwd: &std::path::Path,
     session: &mut Option<SessionStore>,
@@ -571,6 +608,8 @@ async fn handle_skill_command(
     run_user_turn(
         client,
         registry,
+        output_style_manager,
+        app_config,
         Some(skill_manager),
         cwd,
         session,
@@ -586,6 +625,37 @@ fn handle_memory_command(memory_store: &MemoryStore) -> Result<()> {
     println!("\n{}", "🧠 Saved memories:".cyan().bold());
     println!("{}", memory_store.render_memory_list()?);
     Ok(())
+}
+
+fn handle_output_style_command(
+    cwd: &std::path::Path,
+    output_style_manager: &OutputStyleManager,
+    app_config: &mut AppConfig,
+    style_name: &str,
+) -> Result<bool> {
+    let style_name = style_name.trim();
+    if style_name.is_empty() {
+        println!("\n{}", "🎨 Available output styles:".cyan().bold());
+        println!(
+            "{}",
+            output_style_manager.render_style_list(&app_config.output_style)?
+        );
+        return Ok(false);
+    }
+
+    if !output_style_manager.has_style(style_name)? {
+        anyhow::bail!("unknown output style: {}", style_name);
+    }
+
+    app_config.output_style = style_name.to_string();
+    let path = app_config.save(cwd)?;
+    println!(
+        "\n{} {} ({})",
+        "✅ Output style updated:".green(),
+        app_config.output_style.white(),
+        path.display()
+    );
+    Ok(true)
 }
 
 async fn handle_web_search_command(query: &str) -> Result<()> {
@@ -640,6 +710,8 @@ fn handle_skills_command(skill_manager: &SkillManager) -> Result<()> {
 
 fn build_base_system_prompt(
     memory_store: &MemoryStore,
+    output_style_manager: &OutputStyleManager,
+    app_config: &AppConfig,
     skill_manager: Option<&SkillManager>,
 ) -> Result<Option<String>> {
     let memory_prompt = memory_store.build_system_prompt()?;
@@ -655,11 +727,12 @@ fn build_base_system_prompt(
         .collect::<Vec<_>>()
         .join("\n\n");
 
-    if joined.trim().is_empty() {
-        Ok(None)
+    let base_prompt = if joined.trim().is_empty() {
+        None
     } else {
-        Ok(Some(joined))
-    }
+        Some(joined)
+    };
+    output_style_manager.apply_selected_style(&app_config.output_style, base_prompt)
 }
 
 async fn handle_manual_compact(

@@ -40,6 +40,8 @@ pub struct AppConfig {
     pub theme: Theme,
     #[serde(default = "default_tips")]
     pub tips: bool,
+    #[serde(default = "default_output_style")]
+    pub output_style: String,
 }
 
 impl Default for Theme {
@@ -53,12 +55,17 @@ impl Default for AppConfig {
         Self {
             theme: Theme::Default,
             tips: true,
+            output_style: default_output_style(),
         }
     }
 }
 
 fn default_tips() -> bool {
     true
+}
+
+fn default_output_style() -> String {
+    "default".to_string()
 }
 
 impl AppConfig {
@@ -163,6 +170,7 @@ mod tests {
         let cfg = load_from_path(&path).unwrap();
         assert_eq!(cfg.theme, Theme::Default);
         assert!(cfg.tips);
+        assert_eq!(cfg.output_style, "default");
     }
 
     #[test]
@@ -172,6 +180,7 @@ mod tests {
         let cfg = AppConfig {
             theme: Theme::Dark,
             tips: false,
+            output_style: "concise".to_string(),
         };
 
         let path = resolve_settings_path_with_home(project.path(), Some(home.path())).unwrap();
@@ -181,5 +190,6 @@ mod tests {
         let loaded = load_from_path(&path).unwrap();
         assert_eq!(loaded.theme, Theme::Dark);
         assert!(!loaded.tips);
+        assert_eq!(loaded.output_style, "concise");
     }
 }

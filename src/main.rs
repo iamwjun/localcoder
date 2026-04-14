@@ -9,6 +9,7 @@ mod engine;
 mod git;
 mod markdown;
 mod memory;
+mod output_style;
 mod plan;
 mod repl;
 mod session;
@@ -30,6 +31,7 @@ async fn main() -> Result<()> {
     print_banner();
     println!("{}", "🦙 Using Ollama".green().bold());
 
+    let output_style_manager = output_style::OutputStyleManager::new(&cwd);
     let plan_manager = plan::PlanManager::new(&cwd)?;
     let skill_manager = skills::SkillManager::new(&cwd)?;
     let mut registry = tools::ToolRegistry::new();
@@ -56,7 +58,14 @@ async fn main() -> Result<()> {
         repl::start_repl(registry, resume_target).await?;
     } else {
         let prompt = prompt_args.join(" ");
-        one_shot(&prompt, registry, plan_manager, skill_manager).await?;
+        one_shot(
+            &prompt,
+            registry,
+            output_style_manager,
+            plan_manager,
+            skill_manager,
+        )
+        .await?;
     }
 
     Ok(())
@@ -109,12 +118,37 @@ fn print_banner() {
 async fn one_shot(
     prompt: &str,
     registry: tools::ToolRegistry,
+    output_style_manager: output_style::OutputStyleManager,
     plan_manager: plan::PlanManager,
     skill_manager: skills::SkillManager,
 ) -> Result<()> {
+    let cwd = env::current_dir()?;
+    let mut app_config = config::AppConfig::load(&cwd)?;
     if prompt.trim() == "/plan" {
         println!("{}", "📋 Plan Status:".cyan().bold());
         println!("{}", plan_manager.render_status());
+        return Ok(());
+    }
+
+    if let Some(style_name) = parse_command_arg(prompt, "/output-style") {
+        if style_name.is_empty() {
+            println!("{}", "🎨 Available output styles:".cyan().bold());
+            println!(
+                "{}",
+                output_style_manager.render_style_list(&app_config.output_style)?
+            );
+        } else if output_style_manager.has_style(style_name)? {
+            app_config.output_style = style_name.trim().to_string();
+            let path = app_config.save(&cwd)?;
+            println!(
+                "{} {} ({})",
+                "✅ Output style updated:".green(),
+                app_config.output_style.white(),
+                path.display()
+            );
+        } else {
+            anyhow::bail!("unknown output style: {}", style_name);
+        }
         return Ok(());
     }
 
@@ -137,7 +171,6 @@ async fn one_shot(
     }
 
     let client = api::LLMClient::new()?;
-    let cwd = env::current_dir()?;
     let mut memory_store = memory::MemoryStore::new(&cwd, 0)?;
     let mut effective_prompt = prompt.trim().to_string();
 
@@ -157,10 +190,12 @@ async fn one_shot(
     println!("{} {}", "💬 User:".green().bold(), effective_prompt);
     println!();
 
-    let system_prompt = merge_system_prompts([
+    let base_system_prompt = merge_system_prompts([
         memory_store.build_system_prompt()?,
         skill_manager.build_system_prompt()?,
     ]);
+    let system_prompt =
+        output_style_manager.apply_selected_style(&app_config.output_style, base_system_prompt)?;
     println!("{}", "🤖 Model is thinking...\n".yellow());
 
     let mut messages = vec![serde_json::json!({"role": "user", "content": effective_prompt})];
