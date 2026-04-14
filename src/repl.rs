@@ -9,6 +9,7 @@ use crate::engine;
 use crate::git;
 use crate::memory::MemoryStore;
 use crate::session::SessionStore;
+use crate::skills::SkillManager;
 use crate::tools::ToolRegistry;
 use crate::types::ConversationHistory;
 use anyhow::{Context, Result};
@@ -33,6 +34,10 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
     print_instructions(&client, &app_config);
     let (mut session, mut messages) = init_session(&cwd, resume)?;
     let mut memory_store = MemoryStore::new(&cwd, visible_message_count(&messages))?;
+    let skill_manager = registry.skill_manager();
+    if let Some(manager) = &skill_manager {
+        manager.set_session_id(session.as_ref().map(|s| s.id.as_str()));
+    }
     if let Some(s) = &session {
         println!("{} {}", "🧾 Session:".cyan().bold(), s.id.as_str().white());
     } else {
@@ -61,6 +66,7 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
                             handle_resume_command(
                                 &mut rl,
                                 &cwd,
+                                skill_manager.as_ref(),
                                 &mut memory_store,
                                 &mut session,
                                 &mut messages,
@@ -132,64 +138,68 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
                         continue;
                     }
 
+                    if command_arg(input, "/skills").is_some() {
+                        if let Some(manager) = skill_manager.as_ref() {
+                            if let Err(e) = handle_skills_command(manager) {
+                                eprintln!("\n{} {}", "❌ Skills failed:".red().bold(), e);
+                            }
+                        } else {
+                            eprintln!("\n{}", "❌ Skills are not initialized".red().bold());
+                        }
+                        continue;
+                    }
+
+                    if let Some(manager) = skill_manager.as_ref() {
+                        if let Some((skill_name, skill_args)) = parse_slash_skill(input) {
+                            match manager.has_user_invocable(skill_name) {
+                                Ok(true) => {
+                                    if let Err(e) = handle_skill_command(
+                                        &client,
+                                        &registry,
+                                        manager,
+                                        &cwd,
+                                        &mut session,
+                                        &mut memory_store,
+                                        &mut messages,
+                                        &mut display_history,
+                                        skill_name,
+                                        skill_args,
+                                    )
+                                    .await
+                                    {
+                                        eprintln!("\n{} {}", "❌ Skill failed:".red().bold(), e);
+                                    }
+                                    continue;
+                                }
+                                Ok(false) => {}
+                                Err(e) => {
+                                    eprintln!("\n{} {}", "❌ Skill lookup failed:".red().bold(), e);
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+
                     if handle_command(input, &mut display_history).await {
                         break;
                     }
                     continue;
                 }
 
-                messages.push(json!({"role": "user", "content": input}));
-                display_history.add_user_message(input);
-                ensure_session_started(&cwd, &mut session)?;
-                session
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("session was not initialized"))?
-                    .append_message(
-                    messages
-                        .last()
-                        .ok_or_else(|| anyhow::anyhow!("missing just-added user message"))?,
-                )?;
-
-                println!("\n{}", "🤖 Model is thinking...\n".yellow());
-
-                maybe_auto_compact(&client, &mut session, &mut messages, &mut display_history).await?;
-
-                let before_len = messages.len();
-                let system_prompt = memory_store.build_system_prompt()?;
-
-                match engine::run_agent_loop_with_system_prompt(
+                if let Err(e) = run_user_turn(
                     &client,
                     &registry,
+                    skill_manager.as_ref(),
+                    &cwd,
+                    &mut session,
+                    &mut memory_store,
                     &mut messages,
-                    system_prompt.as_deref(),
+                    &mut display_history,
+                    input,
                 )
                 .await
                 {
-                    Ok(response) => {
-                        if let Some(s) = &session {
-                            s.append_messages(&messages[before_len..])?;
-                        }
-                        display_history = rebuild_display_history(&messages);
-                        let saved_memories = memory_store.extract_and_save(&client, &messages).await?;
-                        if !saved_memories.is_empty() {
-                            println!(
-                                "\n{} {}",
-                                "🧠 Saved memories:".cyan().bold(),
-                                saved_memories
-                                    .iter()
-                                    .map(|m| format!("[{}] {}", m.memory_type, m.name))
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            );
-                        }
-                        if response.is_empty() {
-                            println!();
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("\n{} {}", "❌ Error:".red().bold(), e);
-                        display_history = rebuild_display_history(&messages);
-                    }
+                    eprintln!("\n{} {}", "❌ Error:".red().bold(), e);
                 }
             }
             Err(ReadlineError::Interrupted) => {
@@ -292,6 +302,8 @@ fn print_instructions(client: &LLMClient, app_config: &AppConfig) {
         println!("  - Type {} to review current diff", "/review".yellow());
         println!("  - Type {} to generate and run git commit", "/commit".yellow());
         println!("  - Type {} to list saved memories", "/memory".yellow());
+        println!("  - Type {} to list available skills", "/skills".yellow());
+        println!("  - Type {} to invoke a user skill", "/<skill-name>".yellow());
         println!("  - Type {} to open config menu", "/config".yellow());
         println!("  - Type {} to switch Ollama model", "/model".yellow());
         println!("  - Type {} to show help", "/help".yellow());
@@ -376,6 +388,8 @@ fn print_help() {
     println!("  {}            - Review current git diff with the model", "/review".yellow());
     println!("  {}    - Generate a commit message and commit", "/commit [title]".yellow());
     println!("  {}           - List saved memories", "/memory".yellow());
+    println!("  {}           - List available user skills", "/skills".yellow());
+    println!("  {}     - Invoke a user skill by slash command", "/<skill-name> [args]".yellow());
     println!(
         "  {}           - Configure UI settings (Theme / Tips)",
         "/config".yellow()
@@ -407,10 +421,163 @@ async fn maybe_auto_compact(
     Ok(())
 }
 
+async fn run_user_turn(
+    client: &LLMClient,
+    registry: &ToolRegistry,
+    skill_manager: Option<&SkillManager>,
+    cwd: &std::path::Path,
+    session: &mut Option<SessionStore>,
+    memory_store: &mut MemoryStore,
+    messages: &mut Vec<Value>,
+    display_history: &mut ConversationHistory,
+    user_input: &str,
+) -> Result<()> {
+    let result = async {
+        messages.push(json!({"role": "user", "content": user_input}));
+        display_history.add_user_message(user_input);
+        ensure_session_started(cwd, session)?;
+
+        if let Some(manager) = skill_manager {
+            manager.set_session_id(session.as_ref().map(|s| s.id.as_str()));
+        }
+
+        session
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("session was not initialized"))?
+            .append_message(
+                messages
+                    .last()
+                    .ok_or_else(|| anyhow::anyhow!("missing just-added user message"))?,
+            )?;
+
+        println!("\n{}", "🤖 Model is thinking...\n".yellow());
+
+        maybe_auto_compact(client, session, messages, display_history).await?;
+
+        let before_len = messages.len();
+        let system_prompt = build_base_system_prompt(memory_store, skill_manager)?;
+
+        match engine::run_agent_loop_with_system_prompt(
+            client,
+            registry,
+            messages,
+            system_prompt.as_deref(),
+        )
+        .await
+        {
+            Ok(response) => {
+                if let Some(s) = session {
+                    s.append_messages(&messages[before_len..])?;
+                }
+                *display_history = rebuild_display_history(messages);
+                let saved_memories = memory_store.extract_and_save(client, messages).await?;
+                if !saved_memories.is_empty() {
+                    println!(
+                        "\n{} {}",
+                        "🧠 Saved memories:".cyan().bold(),
+                        saved_memories
+                            .iter()
+                            .map(|m| format!("[{}] {}", m.memory_type, m.name))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
+                if response.is_empty() {
+                    println!();
+                }
+                Ok(())
+            }
+            Err(err) => {
+                *display_history = rebuild_display_history(messages);
+                Err(err)
+            }
+        }
+    }
+    .await;
+
+    registry.clear_active_skill();
+    result
+}
+
+async fn handle_skill_command(
+    client: &LLMClient,
+    registry: &ToolRegistry,
+    skill_manager: &SkillManager,
+    cwd: &std::path::Path,
+    session: &mut Option<SessionStore>,
+    memory_store: &mut MemoryStore,
+    messages: &mut Vec<Value>,
+    display_history: &mut ConversationHistory,
+    skill_name: &str,
+    skill_args: &str,
+) -> Result<()> {
+    ensure_session_started(cwd, session)?;
+    skill_manager.set_session_id(session.as_ref().map(|s| s.id.as_str()));
+
+    let resolved = skill_manager.resolve_and_activate(skill_name, skill_args)?;
+    println!(
+        "\n{} {} {}",
+        "🧩 Skill:".cyan().bold(),
+        resolved.name.white(),
+        format!("[{} / {}]", resolved.loaded_from, resolved.context).dimmed()
+    );
+    if !resolved.allowed_tools.is_empty() {
+        println!(
+            "{} {}",
+            "🔒 Allowed tools:".cyan().bold(),
+            resolved.allowed_tools.join(", ")
+        );
+    }
+
+    let user_message = resolved.default_user_message(skill_args);
+    run_user_turn(
+        client,
+        registry,
+        Some(skill_manager),
+        cwd,
+        session,
+        memory_store,
+        messages,
+        display_history,
+        &user_message,
+    )
+    .await
+}
+
 fn handle_memory_command(memory_store: &MemoryStore) -> Result<()> {
     println!("\n{}", "🧠 Saved memories:".cyan().bold());
     println!("{}", memory_store.render_memory_list()?);
     Ok(())
+}
+
+fn handle_skills_command(skill_manager: &SkillManager) -> Result<()> {
+    println!("\n{}", "🧩 Available skills:".cyan().bold());
+    println!("{}", skill_manager.render_user_invocable_list()?);
+    Ok(())
+}
+
+fn build_base_system_prompt(
+    memory_store: &MemoryStore,
+    skill_manager: Option<&SkillManager>,
+) -> Result<Option<String>> {
+    let memory_prompt = memory_store.build_system_prompt()?;
+    let skill_prompt = match skill_manager {
+        Some(manager) => manager.build_system_prompt()?,
+        None => None,
+    };
+
+    let joined = [memory_prompt, skill_prompt]
+        .into_iter()
+        .flatten()
+        .filter(|part| !part.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    if joined.trim().is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(joined))
+    }
 }
 
 async fn handle_manual_compact(
@@ -551,6 +718,7 @@ fn configure_tips(
 fn handle_resume_command(
     rl: &mut DefaultEditor,
     cwd: &std::path::Path,
+    skill_manager: Option<&SkillManager>,
     memory_store: &mut MemoryStore,
     session: &mut Option<SessionStore>,
     messages: &mut Vec<Value>,
@@ -594,6 +762,9 @@ fn handle_resume_command(
     *messages = loaded_messages;
     memory_store.set_processed_visible_messages(visible_message_count(messages));
     *display_history = rebuild_display_history(messages);
+    if let Some(manager) = skill_manager {
+        manager.set_session_id(session.as_ref().map(|s| s.id.as_str()));
+    }
 
     println!(
         "{} {}",
@@ -688,6 +859,19 @@ fn command_arg<'a>(input: &'a str, command: &str) -> Option<&'a str> {
     }
 
     None
+}
+
+fn parse_slash_skill(input: &str) -> Option<(&str, &str)> {
+    let trimmed = input.trim();
+    let rest = trimmed.strip_prefix('/')?;
+    if rest.is_empty() {
+        return None;
+    }
+
+    match rest.split_once(char::is_whitespace) {
+        Some((name, args)) => Some((name, args.trim())),
+        None => Some((rest, "")),
+    }
 }
 
 fn handle_diff_command(cwd: &std::path::Path) -> Result<()> {
@@ -946,5 +1130,18 @@ mod tests {
     #[test]
     fn command_arg_rejects_prefix_without_separator() {
         assert_eq!(command_arg("/commitment", "/commit"), None);
+    }
+
+    #[test]
+    fn parse_slash_skill_extracts_name_and_args() {
+        assert_eq!(
+            parse_slash_skill("/simplify src/lib.rs"),
+            Some(("simplify", "src/lib.rs"))
+        );
+    }
+
+    #[test]
+    fn parse_slash_skill_handles_name_only() {
+        assert_eq!(parse_slash_skill("/simplify"), Some(("simplify", "")));
     }
 }

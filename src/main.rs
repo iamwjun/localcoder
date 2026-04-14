@@ -11,6 +11,7 @@ mod markdown;
 mod memory;
 mod repl;
 mod session;
+mod skills;
 mod tools;
 mod types;
 
@@ -23,11 +24,14 @@ use std::env;
 async fn main() -> Result<()> {
     dotenv::dotenv().ok();
     api::LLMClient::ensure_settings_file()?;
+    let cwd = env::current_dir()?;
 
     print_banner();
     println!("{}", "🦙 Using Ollama".green().bold());
 
+    let skill_manager = skills::SkillManager::new(&cwd)?;
     let mut registry = tools::ToolRegistry::new();
+    registry.attach_skill_manager(skill_manager.clone());
     registry.register(tools::EchoTool);
     registry.register(tools::ReadTool);
     registry.register(tools::EditTool);
@@ -35,6 +39,7 @@ async fn main() -> Result<()> {
     registry.register(tools::GlobTool);
     registry.register(tools::GrepTool);
     registry.register(tools::BashTool);
+    registry.register(tools::SkillTool::new(skill_manager.clone()));
 
     let args: Vec<String> = env::args().skip(1).collect();
     let (resume_target, prompt_args) = parse_args(args)?;
@@ -43,7 +48,7 @@ async fn main() -> Result<()> {
         repl::start_repl(registry, resume_target).await?;
     } else {
         let prompt = prompt_args.join(" ");
-        one_shot(&prompt, registry).await?;
+        one_shot(&prompt, registry, skill_manager).await?;
     }
 
     Ok(())
@@ -93,17 +98,45 @@ fn print_banner() {
     println!();
 }
 
-async fn one_shot(prompt: &str, registry: tools::ToolRegistry) -> Result<()> {
-    println!("{} {}", "💬 User:".green().bold(), prompt);
-    println!();
+async fn one_shot(
+    prompt: &str,
+    registry: tools::ToolRegistry,
+    skill_manager: skills::SkillManager,
+) -> Result<()> {
+    if prompt.trim() == "/skills" {
+        println!("{}", "🧩 Available skills:".cyan().bold());
+        println!("{}", skill_manager.render_user_invocable_list()?);
+        return Ok(());
+    }
 
     let client = api::LLMClient::new()?;
     let cwd = env::current_dir()?;
     let mut memory_store = memory::MemoryStore::new(&cwd, 0)?;
-    let system_prompt = memory_store.build_system_prompt()?;
+    let mut effective_prompt = prompt.trim().to_string();
+
+    if let Some((skill_name, args)) = parse_slash_skill(prompt) {
+        if skill_manager.has_user_invocable(skill_name)? {
+            let resolved = skill_manager.resolve_and_activate(skill_name, args)?;
+            effective_prompt = resolved.default_user_message(args);
+            println!(
+                "{} {} {}",
+                "🧩 Skill:".cyan().bold(),
+                resolved.name.white(),
+                format!("[{} / {}]", resolved.loaded_from, resolved.context).dimmed()
+            );
+        }
+    }
+
+    println!("{} {}", "💬 User:".green().bold(), effective_prompt);
+    println!();
+
+    let system_prompt = merge_system_prompts([
+        memory_store.build_system_prompt()?,
+        skill_manager.build_system_prompt()?,
+    ]);
     println!("{}", "🤖 Model is thinking...\n".yellow());
 
-    let mut messages = vec![serde_json::json!({"role": "user", "content": prompt})];
+    let mut messages = vec![serde_json::json!({"role": "user", "content": effective_prompt})];
 
     match engine::run_agent_loop_with_system_prompt(
         &client,
@@ -163,5 +196,51 @@ mod tests {
         let (resume, prompt) = parse_args(vec!["hello".into(), "world".into()]).unwrap();
         assert!(matches!(resume, ResumeTarget::New));
         assert_eq!(prompt, vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn parse_slash_skill_extracts_name_and_args() {
+        assert_eq!(
+            parse_slash_skill("/simplify src/main.rs"),
+            Some(("simplify", "src/main.rs"))
+        );
+    }
+
+    #[test]
+    fn parse_slash_skill_handles_name_only() {
+        assert_eq!(parse_slash_skill("/simplify"), Some(("simplify", "")));
+    }
+
+    #[test]
+    fn parse_slash_skill_rejects_non_slash_input() {
+        assert_eq!(parse_slash_skill("simplify"), None);
+    }
+}
+
+fn merge_system_prompts(parts: [Option<String>; 2]) -> Option<String> {
+    let joined = parts
+        .into_iter()
+        .flatten()
+        .filter(|part| !part.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    if joined.trim().is_empty() {
+        None
+    } else {
+        Some(joined)
+    }
+}
+
+fn parse_slash_skill(input: &str) -> Option<(&str, &str)> {
+    let trimmed = input.trim();
+    let rest = trimmed.strip_prefix('/')?;
+    if rest.is_empty() {
+        return None;
+    }
+
+    match rest.split_once(char::is_whitespace) {
+        Some((name, args)) => Some((name, args.trim())),
+        None => Some((rest, "")),
     }
 }

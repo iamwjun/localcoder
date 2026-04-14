@@ -44,63 +44,77 @@ pub async fn run_agent_loop_with_system_prompt(
     messages: &mut Vec<Value>,
     system_prompt: Option<&str>,
 ) -> Result<String> {
-    let tools = registry.get_schemas();
-    let mut final_text = String::new();
+    let result = async {
+        loop {
+            // ── 1. Call the model ─────────────────────────────────────────
+            let request_messages = build_request_messages(registry, messages, system_prompt);
+            let tools = registry.get_schemas();
+            let response = client.call_with_tools(&request_messages, &tools).await?;
 
-    loop {
-        // ── 1. Call the model ─────────────────────────────────────────────
-        let request_messages = build_request_messages(messages, system_prompt);
-        let response = client.call_with_tools(&request_messages, &tools).await?;
-        final_text = response.text.clone();
+            // ── 2. Append assistant message to conversation history ───────
+            messages.push(build_assistant_message(&response.text, &response.tool_uses));
 
-        // ── 2. Append assistant message to conversation history ───────────
-        messages.push(build_assistant_message(&response.text, &response.tool_uses));
+            // ── 3. Check stop reason ──────────────────────────────────────
+            if response.stop_reason != "tool_use" || response.tool_uses.is_empty() {
+                break Ok(response.text);
+            }
 
-        // ── 3. Check stop reason ──────────────────────────────────────────
-        if response.stop_reason != "tool_use" || response.tool_uses.is_empty() {
-            break;
+            // ── 4. Execute tool calls and collect results ─────────────────
+            println!();
+            let mut tool_results: Vec<Value> = Vec::new();
+
+            for call in &response.tool_uses {
+                println!("{}", format!("▶ Tool: {}", call.name).cyan());
+
+                let (content, is_error) =
+                    match registry.execute(&call.name, call.arguments.clone()).await {
+                        Ok(result) => (result, false),
+                        Err(e) => {
+                            eprintln!("{} {}", "  ✗ Tool error:".red(), e);
+                            (e.to_string(), true)
+                        }
+                    };
+
+                tool_results.push(json!({
+                    "role": "tool",
+                    "tool_name": call.name,
+                    "content": content,
+                    "is_error": is_error
+                }));
+            }
+
+            // ── 5. Append tool results and loop ───────────────────────────
+            messages.extend(tool_results);
         }
-
-        // ── 4. Execute tool calls and collect results ─────────────────────
-        println!();
-        let mut tool_results: Vec<Value> = Vec::new();
-
-        for call in &response.tool_uses {
-            println!("{}", format!("▶ Tool: {}", call.name).cyan());
-
-            let (content, is_error) =
-                match registry.execute(&call.name, call.arguments.clone()).await {
-                    Ok(result) => (result, false),
-                    Err(e) => {
-                        eprintln!("{} {}", "  ✗ Tool error:".red(), e);
-                        (e.to_string(), true)
-                    }
-                };
-
-            tool_results.push(json!({
-                "role": "tool",
-                "tool_name": call.name,
-                "content": content,
-                "is_error": is_error
-            }));
-        }
-
-        // ── 5. Append tool results and loop ───────────────────────────────
-        messages.extend(tool_results);
     }
+    .await;
 
-    Ok(final_text)
+    registry.clear_active_skill();
+    result
 }
 
-fn build_request_messages(messages: &[Value], system_prompt: Option<&str>) -> Vec<Value> {
+fn build_request_messages(
+    registry: &ToolRegistry,
+    messages: &[Value],
+    system_prompt: Option<&str>,
+) -> Vec<Value> {
     let mut request_messages = Vec::new();
-    if let Some(prompt) = system_prompt {
-        if !prompt.trim().is_empty() {
-            request_messages.push(json!({
-                "role": "system",
-                "content": prompt
-            }));
+
+    let mut parts = Vec::new();
+    if let Some(prompt) = system_prompt.filter(|prompt| !prompt.trim().is_empty()) {
+        parts.push(prompt.trim().to_string());
+    }
+    if let Some(active_skill) = registry.active_skill_prompt() {
+        if !active_skill.trim().is_empty() {
+            parts.push(active_skill);
         }
+    }
+
+    if !parts.is_empty() {
+        request_messages.push(json!({
+            "role": "system",
+            "content": parts.join("\n\n")
+        }));
     }
     request_messages.extend(messages.iter().cloned());
     request_messages
@@ -136,7 +150,9 @@ fn build_assistant_message(text: &str, tool_uses: &[ToolUseCall]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::skills::SkillManager;
     use crate::types::ToolUseCall;
+    use tempfile::TempDir;
 
     #[test]
     fn build_assistant_message_text_only() {
@@ -175,10 +191,28 @@ mod tests {
 
     #[test]
     fn build_request_messages_prefixes_system_prompt() {
+        let registry = ToolRegistry::new();
         let messages = vec![json!({"role":"user","content":"hello"})];
-        let request = build_request_messages(&messages, Some("[持久记忆]\nfoo"));
+        let request = build_request_messages(&registry, &messages, Some("[持久记忆]\nfoo"));
         assert_eq!(request.len(), 2);
         assert_eq!(request[0]["role"], "system");
         assert_eq!(request[1]["role"], "user");
+    }
+
+    #[test]
+    fn build_request_messages_appends_active_skill_prompt() {
+        let cwd = TempDir::new().unwrap();
+        let manager = SkillManager::new(cwd.path()).unwrap();
+        manager.set_session_id(Some("s1"));
+        manager.resolve_and_activate("simplify", "src/main.rs").unwrap();
+
+        let mut registry = ToolRegistry::new();
+        registry.attach_skill_manager(manager);
+
+        let messages = vec![json!({"role":"user","content":"hello"})];
+        let request = build_request_messages(&registry, &messages, Some("[持久记忆]\nfoo"));
+        let content = request[0]["content"].as_str().unwrap();
+        assert!(content.contains("[持久记忆]"));
+        assert!(content.contains("[技能 simplify]"));
     }
 }

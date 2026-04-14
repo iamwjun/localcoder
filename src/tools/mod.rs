@@ -26,6 +26,7 @@ pub mod file_write;
 pub mod glob_tool;
 pub mod grep_tool;
 pub mod bash_tool;
+pub mod skill_tool;
 
 pub use file_edit::EditTool;
 pub use file_read::ReadTool;
@@ -33,11 +34,13 @@ pub use file_write::WriteTool;
 pub use glob_tool::GlobTool;
 pub use grep_tool::GrepTool;
 pub use bash_tool::BashTool;
+pub use skill_tool::SkillTool;
 
+use crate::skills::SkillManager;
 use anyhow::{Result, anyhow};
 use colored::*;
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // ─── Tool trait ────────────────────────────────────────────────────────────
 
@@ -67,6 +70,7 @@ use std::future::Future;
 /// Registry that owns all registered tools and routes model tool calls.
 pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn ToolBoxed>>,
+    skill_manager: Option<SkillManager>,
 }
 
 /// Object-safe wrapper trait for dynamic dispatch.
@@ -103,7 +107,16 @@ impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
+            skill_manager: None,
         }
+    }
+
+    pub fn attach_skill_manager(&mut self, skill_manager: SkillManager) {
+        self.skill_manager = Some(skill_manager);
+    }
+
+    pub fn skill_manager(&self) -> Option<SkillManager> {
+        self.skill_manager.clone()
     }
 
     /// Register a tool. Later registrations with the same name overwrite earlier ones.
@@ -113,9 +126,11 @@ impl ToolRegistry {
 
     /// Collect Ollama-compatible tool definitions for all registered tools.
     pub fn get_schemas(&self) -> Vec<Value> {
+        let allowed = self.active_allowed_tools();
         let mut schemas: Vec<Value> = self
             .tools
             .values()
+            .filter(|tool| tool_is_allowed(tool.name(), allowed.as_ref()))
             .map(|t| {
                 json!({
                     "type": "function",
@@ -139,6 +154,14 @@ impl ToolRegistry {
 
     /// Look up and execute a tool by name.
     pub async fn execute(&self, name: &str, input: Value) -> Result<String> {
+        let allowed = self.active_allowed_tools();
+        if !tool_is_allowed(name, allowed.as_ref()) {
+            return Err(anyhow!(
+                "tool '{}' is not allowed by the active skill",
+                name
+            ));
+        }
+
         let tool = self
             .tools
             .get(name)
@@ -160,11 +183,36 @@ impl ToolRegistry {
         names.sort();
         names
     }
+
+    pub fn active_skill_prompt(&self) -> Option<String> {
+        self.skill_manager
+            .as_ref()
+            .and_then(|manager| manager.active_prompt())
+    }
+
+    pub fn clear_active_skill(&self) {
+        if let Some(manager) = &self.skill_manager {
+            manager.clear_active();
+        }
+    }
+
+    fn active_allowed_tools(&self) -> Option<HashSet<String>> {
+        self.skill_manager
+            .as_ref()
+            .and_then(|manager| manager.active_allowed_tools())
+    }
 }
 
 impl Default for ToolRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn tool_is_allowed(name: &str, allowed: Option<&HashSet<String>>) -> bool {
+    match allowed {
+        Some(allowed) => allowed.contains(&name.to_ascii_lowercase()),
+        None => true,
     }
 }
 
@@ -298,5 +346,17 @@ mod tests {
         let result = r.execute("nonexistent", json!({})).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("unknown tool"));
+    }
+
+    #[test]
+    fn tool_is_allowed_accepts_missing_policy() {
+        assert!(super::tool_is_allowed("Read", None));
+    }
+
+    #[test]
+    fn tool_is_allowed_is_case_insensitive() {
+        let allowed = HashSet::from([String::from("read")]);
+        assert!(super::tool_is_allowed("Read", Some(&allowed)));
+        assert!(!super::tool_is_allowed("Write", Some(&allowed)));
     }
 }
