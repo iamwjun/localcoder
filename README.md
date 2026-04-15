@@ -1,5 +1,7 @@
 # Localcoder
 
+> Note: This repository is developed with the help of Claude Code and Codex. If that makes you uncomfortable, apologies.
+
 Chinese version: [README.zh.md](./README.zh.md)
 
 ## 📖 Overview

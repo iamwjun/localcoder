@@ -1,5 +1,7 @@
 # Localcoder
 
+> 说明：本仓库在开发过程中使用了 Claude Code 和 Codex。如果这让你感到不适，抱歉。
+
 英文版：[README.md](./README.md)
 
 ## 📖 简介
