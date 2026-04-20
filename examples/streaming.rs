@@ -8,7 +8,6 @@
 
 use anyhow::Result;
 use colored::*;
-use futures::stream::StreamExt;
 use serde_json::json;
 use std::io::{self, Write};
 
@@ -36,7 +35,7 @@ async fn main() -> Result<()> {
         "stream": true  // Enable streaming response
     });
 
-    let response = client
+    let mut response = client
         .post("https://api.anthropic.com/v1/messages")
         .header("x-api-key", api_key)
         .header("anthropic-version", "2023-06-01")
@@ -47,12 +46,9 @@ async fn main() -> Result<()> {
 
     println!("{}", "Claude: ".green().bold());
 
-    // Handle streaming response
-    let mut stream = response.bytes_stream();
     let mut buffer = String::new();
 
-    while let Some(chunk_result) = stream.next().await {
-        let chunk = chunk_result?;
+    while let Some(chunk) = response.chunk().await? {
         buffer.push_str(&String::from_utf8_lossy(&chunk));
 
         // Process complete SSE events

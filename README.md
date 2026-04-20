@@ -229,7 +229,6 @@ localcoder/
 | Line editing | rustyline 14.0 |
 | Error handling | anyhow |
 | Terminal colors | colored 2.1 |
-| Streaming utilities | futures 0.3 |
 
 ---
 

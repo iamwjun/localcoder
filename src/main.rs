@@ -7,7 +7,6 @@ mod compact;
 mod config;
 mod engine;
 mod git;
-mod markdown;
 mod memory;
 mod output_style;
 mod plan;

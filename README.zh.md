@@ -229,7 +229,6 @@ localcoder/
 | 命令行编辑 | rustyline 14.0 |
 | 错误处理 | anyhow |
 | 终端彩色 | colored 2.1 |
-| 流式处理 | futures 0.3 |
 
 ---
 
