@@ -57,7 +57,7 @@ pub struct LLMClient {
 }
 
 impl LLMClient {
-    /// Create a client from `.localcoder/setting.json`.
+    /// Create a client from `$HOME/.localcoder/settings.json`.
     pub fn new() -> Result<Self> {
         let settings = Self::load_settings()?;
         Ok(Self::from_settings(settings))
@@ -65,9 +65,8 @@ impl LLMClient {
 
     /// Ensure the settings file exists before command handling starts.
     pub fn ensure_settings_file() -> Result<PathBuf> {
-        let cwd = env::current_dir().context("failed to resolve current working directory")?;
         let home = env::var_os("HOME").map(PathBuf::from);
-        Self::ensure_settings_file_with(&cwd, home.as_deref())
+        Self::ensure_settings_file_with(home.as_deref())
     }
 
     pub fn home_settings_path() -> Result<PathBuf> {
@@ -90,17 +89,11 @@ impl LLMClient {
     }
 
     fn resolve_settings_path() -> Result<PathBuf> {
-        let cwd = env::current_dir().context("failed to resolve current working directory")?;
         let home = env::var_os("HOME").map(PathBuf::from);
-        Self::resolve_settings_path_with(&cwd, home.as_deref())
+        Self::resolve_settings_path_with(home.as_deref())
     }
 
-    fn resolve_settings_path_with(cwd: &Path, home: Option<&Path>) -> Result<PathBuf> {
-        let cwd_path = cwd.join(".localcoder/settings.json");
-        if cwd_path.exists() {
-            return Ok(cwd_path);
-        }
-
+    fn resolve_settings_path_with(home: Option<&Path>) -> Result<PathBuf> {
         if let Some(home) = home {
             let home_path = home.join(".localcoder/settings.json");
             if home_path.exists() {
@@ -108,17 +101,16 @@ impl LLMClient {
             }
         }
 
-        Err(anyhow!(
-            "missing .localcoder/settings.json; checked current directory and $HOME"
-        ))
+        Err(anyhow!("missing $HOME/.localcoder/settings.json"))
     }
 
-    fn ensure_settings_file_with(cwd: &Path, home: Option<&Path>) -> Result<PathBuf> {
-        if let Ok(path) = Self::resolve_settings_path_with(cwd, home) {
+    fn ensure_settings_file_with(home: Option<&Path>) -> Result<PathBuf> {
+        if let Ok(path) = Self::resolve_settings_path_with(home) {
             return Ok(path);
         }
 
-        let path = cwd.join(".localcoder/settings.json");
+        let home = home.context("$HOME is not set")?;
+        let path = home.join(".localcoder/settings.json");
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).with_context(|| {
                 format!("failed to create settings directory: {}", parent.display())
@@ -420,11 +412,11 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn ensure_settings_file_with_creates_default_settings_in_cwd() {
-        let temp = tempdir().unwrap();
-        let path = LLMClient::ensure_settings_file_with(temp.path(), None).unwrap();
+    fn ensure_settings_file_with_creates_default_settings_in_home() {
+        let home = tempdir().unwrap();
+        let path = LLMClient::ensure_settings_file_with(Some(home.path())).unwrap();
 
-        assert_eq!(path, temp.path().join(".localcoder/settings.json"));
+        assert_eq!(path, home.path().join(".localcoder/settings.json"));
 
         let settings = LLMClient::load_settings_from_path(&path).unwrap();
         assert_eq!(settings.ollama.url, DEFAULT_OLLAMA_URL);
@@ -433,7 +425,6 @@ mod tests {
 
     #[test]
     fn ensure_settings_file_with_prefers_existing_home_settings() {
-        let cwd = tempdir().unwrap();
         let home = tempdir().unwrap();
         let home_settings = home.path().join(".localcoder/settings.json");
 
@@ -444,10 +435,15 @@ mod tests {
         )
         .unwrap();
 
-        let path = LLMClient::ensure_settings_file_with(cwd.path(), Some(home.path())).unwrap();
+        let path = LLMClient::ensure_settings_file_with(Some(home.path())).unwrap();
 
         assert_eq!(path, home_settings);
-        assert!(!cwd.path().join(".localcoder/settings.json").exists());
+    }
+
+    #[test]
+    fn resolve_settings_path_with_requires_home_settings() {
+        let err = LLMClient::resolve_settings_path_with(None).unwrap_err();
+        assert!(err.to_string().contains("$HOME/.localcoder/settings.json"));
     }
 
     #[test]
