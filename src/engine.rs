@@ -77,6 +77,7 @@ pub async fn run_agent_loop_with_system_prompt(
 
                 tool_results.push(json!({
                     "role": "tool",
+                    "tool_call_id": call.id,
                     "tool_name": call.name,
                     "content": content,
                     "is_error": is_error
@@ -152,6 +153,7 @@ fn build_assistant_message(text: &str, tool_uses: &[ToolUseCall]) -> Value {
             .iter()
             .map(|call| {
                 json!({
+                    "id": call.id,
                     "function": {
                         "name": call.name,
                         "arguments": call.arguments
@@ -186,6 +188,7 @@ mod tests {
     #[test]
     fn build_assistant_message_tool_only() {
         let calls = vec![ToolUseCall {
+            id: None,
             name: "echo_tool".into(),
             arguments: json!({"text":"hi"}),
         }];
@@ -200,6 +203,7 @@ mod tests {
     #[test]
     fn build_assistant_message_text_and_tool() {
         let calls = vec![ToolUseCall {
+            id: None,
             name: "echo_tool".into(),
             arguments: json!({"text":"world"}),
         }];
@@ -259,14 +263,17 @@ mod tests {
     fn prioritize_tool_calls_moves_control_tools_first() {
         let ordered = prioritize_tool_calls(&[
             ToolUseCall {
+                id: None,
                 name: "Edit".into(),
                 arguments: json!({}),
             },
             ToolUseCall {
+                id: None,
                 name: "EnterPlanMode".into(),
                 arguments: json!({}),
             },
             ToolUseCall {
+                id: None,
                 name: "skill_tool".into(),
                 arguments: json!({}),
             },

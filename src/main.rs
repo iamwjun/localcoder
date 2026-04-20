@@ -26,9 +26,14 @@ use std::env;
 async fn main() -> Result<()> {
     api::LLMClient::ensure_settings_file()?;
     let cwd = env::current_dir()?;
+    let client = api::LLMClient::new()?;
 
     print_banner();
-    println!("{}", "🦙 Using Ollama".green().bold());
+    println!(
+        "{} {}",
+        "🤖 Using".green().bold(),
+        client.provider_name().green().bold()
+    );
 
     let output_style_manager = output_style::OutputStyleManager::new(&cwd);
     let plan_manager = plan::PlanManager::new(&cwd)?;

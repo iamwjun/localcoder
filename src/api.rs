@@ -1,7 +1,8 @@
 /*!
  * LLM Client Module
  *
- * Pure Ollama client implementation with tool-calling support.
+ * Supports Ollama by default and prefers OpenAI when configured in
+ * `$HOME/.localcoder/settings.json`.
  */
 
 use crate::types::{AgentResponse, OllamaChatResponse, ToolUseCall};
@@ -18,13 +19,29 @@ const DEFAULT_OLLAMA_MODEL: &str = "qwen3.5:4b";
 
 #[derive(Debug, Clone, Deserialize)]
 struct LLMSettings {
-    ollama: OllamaSettings,
+    #[serde(default)]
+    ollama: Option<OllamaSettings>,
+    #[serde(default)]
+    openai: Option<OpenAISettings>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct OllamaSettings {
     url: String,
     model: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct OpenAISettings {
+    base_url: String,
+    api_key: String,
+    model: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Provider {
+    Ollama,
+    OpenAI,
 }
 
 #[derive(Debug, Deserialize)]
@@ -37,9 +54,50 @@ struct OllamaTagModel {
     name: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct OpenAIModelsResponse {
+    data: Vec<OpenAIModelEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIModelEntry {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIChatResponse {
+    choices: Vec<OpenAIChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIChoice {
+    message: OpenAIMessage,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIMessage {
+    content: Option<String>,
+    tool_calls: Option<Vec<OpenAIToolCall>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIToolCall {
+    id: String,
+    function: OpenAIFunctionCall,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIFunctionCall {
+    name: String,
+    arguments: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct PersistedSettings {
-    ollama: PersistedOllamaSettings,
+    #[serde(default)]
+    ollama: Option<PersistedOllamaSettings>,
+    #[serde(default)]
+    openai: Option<OpenAISettings>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -48,10 +106,12 @@ struct PersistedOllamaSettings {
     model: String,
 }
 
-/// Ollama client used by the REPL and agent loop.
+/// LLM client used by the REPL and agent loop.
 pub struct LLMClient {
     client: Client,
+    provider: Provider,
     base_url: String,
+    api_key: Option<String>,
     model: String,
     max_tokens: u32,
 }
@@ -75,10 +135,26 @@ impl LLMClient {
     }
 
     fn from_settings(settings: LLMSettings) -> Self {
+        if let Some(openai) = settings.openai {
+            return Self {
+                client: Client::new(),
+                provider: Provider::OpenAI,
+                base_url: openai.base_url.trim_end_matches('/').to_string(),
+                api_key: Some(openai.api_key),
+                model: openai.model,
+                max_tokens: 4096,
+            };
+        }
+
+        let ollama = settings
+            .ollama
+            .expect("validated settings must include ollama when openai is absent");
         Self {
             client: Client::new(),
-            base_url: settings.ollama.url.trim_end_matches('/').to_string(),
-            model: settings.ollama.model,
+            provider: Provider::Ollama,
+            base_url: ollama.url.trim_end_matches('/').to_string(),
+            api_key: None,
+            model: ollama.model,
             max_tokens: 4096,
         }
     }
@@ -129,28 +205,53 @@ impl LLMClient {
         let settings: LLMSettings = serde_json::from_str(&raw)
             .with_context(|| format!("invalid settings JSON: {}", path.display()))?;
 
-        if settings.ollama.url.trim().is_empty() {
-            return Err(anyhow!("settings.ollama.url must not be empty"));
+        if let Some(openai) = settings.openai.as_ref() {
+            validate_non_empty("settings.openai.base_url", &openai.base_url)?;
+            validate_non_empty("settings.openai.api_key", &openai.api_key)?;
+            validate_non_empty("settings.openai.model", &openai.model)?;
+            return Ok(settings);
         }
-        if settings.ollama.model.trim().is_empty() {
-            return Err(anyhow!("settings.ollama.model must not be empty"));
-        }
+
+        let ollama = settings
+            .ollama
+            .as_ref()
+            .ok_or_else(|| anyhow!("settings must include either openai or ollama"))?;
+        validate_non_empty("settings.ollama.url", &ollama.url)?;
+        validate_non_empty("settings.ollama.model", &ollama.model)?;
 
         Ok(settings)
     }
 
     fn default_settings_json() -> String {
-        json!({
+        serde_json::to_string_pretty(&json!({
             "ollama": {
                 "url": DEFAULT_OLLAMA_URL,
-                "model": DEFAULT_OLLAMA_MODEL,
+                "model": DEFAULT_OLLAMA_MODEL
             }
-        })
-        .to_string()
+        }))
+        .expect("default settings json must serialize")
     }
 
-    /// Send a tool-aware chat request to Ollama.
+    pub fn provider_name(&self) -> &'static str {
+        match self.provider {
+            Provider::Ollama => "Ollama",
+            Provider::OpenAI => "OpenAI",
+        }
+    }
+
+    /// Send a tool-aware chat request to the active provider.
     pub async fn call_with_tools(
+        &self,
+        messages: &[Value],
+        tools: &[Value],
+    ) -> Result<AgentResponse> {
+        match self.provider {
+            Provider::Ollama => self.call_with_tools_ollama(messages, tools).await,
+            Provider::OpenAI => self.call_with_tools_openai(messages, tools).await,
+        }
+    }
+
+    async fn call_with_tools_ollama(
         &self,
         messages: &[Value],
         tools: &[Value],
@@ -207,22 +308,93 @@ impl LLMClient {
             .unwrap_or_default()
             .into_iter()
             .map(|tool_call| ToolUseCall {
+                id: None,
                 name: tool_call.function.name,
                 arguments: tool_call.function.arguments,
             })
             .collect::<Vec<_>>();
 
-        let stop_reason = if tool_uses.is_empty() {
-            "end_turn".to_string()
+        Ok(build_agent_response(text, tool_uses))
+    }
+
+    async fn call_with_tools_openai(
+        &self,
+        messages: &[Value],
+        tools: &[Value],
+    ) -> Result<AgentResponse> {
+        let openai_messages = messages
+            .iter()
+            .enumerate()
+            .map(|(index, message)| map_message_for_openai(index, message))
+            .collect::<Vec<_>>();
+
+        let body = if tools.is_empty() {
+            json!({
+                "model": self.model,
+                "messages": openai_messages,
+                "stream": false,
+                "max_tokens": self.max_tokens
+            })
         } else {
-            "tool_use".to_string()
+            json!({
+                "model": self.model,
+                "messages": openai_messages,
+                "stream": false,
+                "tools": tools,
+                "tool_choice": "auto",
+                "max_tokens": self.max_tokens
+            })
         };
 
-        Ok(AgentResponse {
-            text,
-            stop_reason,
-            tool_uses,
-        })
+        let response = self
+            .authorized_request(
+                self.client
+                    .post(format!("{}/chat/completions", self.base_url))
+                    .header("content-type", "application/json"),
+            )?
+            .json(&body)
+            .send()
+            .await
+            .context("OpenAI request failed")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            anyhow::bail!("OpenAI returned error {}: {}", status, error_text);
+        }
+
+        let response: OpenAIChatResponse = response
+            .json()
+            .await
+            .context("failed to parse OpenAI response")?;
+        let choice = response
+            .choices
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("OpenAI returned no choices"))?;
+
+        let text = choice.message.content.unwrap_or_default();
+        if !text.is_empty() {
+            print!("{}", text);
+        }
+
+        let tool_uses = choice
+            .message
+            .tool_calls
+            .unwrap_or_default()
+            .into_iter()
+            .map(|tool_call| {
+                let arguments = serde_json::from_str(&tool_call.function.arguments)
+                    .unwrap_or_else(|_| json!({ "_raw": tool_call.function.arguments }));
+                ToolUseCall {
+                    id: Some(tool_call.id),
+                    name: tool_call.function.name,
+                    arguments,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        Ok(build_agent_response(text, tool_uses))
     }
 
     pub async fn summarize_messages(&self, messages: &[Value]) -> Result<String> {
@@ -230,45 +402,17 @@ impl LLMClient {
             "以下是一段对话历史，请生成简洁摘要，保留：\n1. 已完成的任务和结果\n2. 重要文件修改\n3. 用户的关键偏好和决定\n4. 未完成的任务\n\n对话历史：\n{}",
             crate::compact::summarize_for_prompt(messages)
         );
-
-        let body = json!({
-            "model": self.model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            "stream": false,
-            "options": {
-                "num_predict": 1024
-            }
-        });
-
-        let response = self
-            .client
-            .post(format!("{}/api/chat", self.base_url))
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .context("Ollama summarize request failed")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-            anyhow::bail!("Ollama returned error {}: {}", status, error_text);
-        }
-
-        let response: OllamaChatResponse = response
-            .json()
-            .await
-            .context("failed to parse Ollama summarize response")?;
-
-        Ok(response.message.content.unwrap_or_default())
+        self.complete_prompt(&prompt, 1024).await
     }
 
     pub async fn complete_prompt(&self, prompt: &str, max_tokens: u32) -> Result<String> {
+        match self.provider {
+            Provider::Ollama => self.complete_prompt_ollama(prompt, max_tokens).await,
+            Provider::OpenAI => self.complete_prompt_openai(prompt, max_tokens).await,
+        }
+    }
+
+    async fn complete_prompt_ollama(&self, prompt: &str, max_tokens: u32) -> Result<String> {
         let body = json!({
             "model": self.model,
             "messages": [
@@ -306,6 +450,64 @@ impl LLMClient {
         Ok(response.message.content.unwrap_or_default())
     }
 
+    async fn complete_prompt_openai(&self, prompt: &str, max_tokens: u32) -> Result<String> {
+        let body = json!({
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            "stream": false,
+            "max_tokens": max_tokens
+        });
+
+        let response = self
+            .authorized_request(
+                self.client
+                    .post(format!("{}/chat/completions", self.base_url))
+                    .header("content-type", "application/json"),
+            )?
+            .json(&body)
+            .send()
+            .await
+            .context("OpenAI prompt request failed")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            anyhow::bail!("OpenAI returned error {}: {}", status, error_text);
+        }
+
+        let response: OpenAIChatResponse = response
+            .json()
+            .await
+            .context("failed to parse OpenAI prompt response")?;
+        let choice = response
+            .choices
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("OpenAI returned no choices"))?;
+        Ok(choice.message.content.unwrap_or_default())
+    }
+
+    fn authorized_request(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<reqwest::RequestBuilder> {
+        match self.provider {
+            Provider::Ollama => Ok(request),
+            Provider::OpenAI => {
+                let api_key = self
+                    .api_key
+                    .as_deref()
+                    .ok_or_else(|| anyhow!("missing OpenAI API key"))?;
+                Ok(request.bearer_auth(api_key))
+            }
+        }
+    }
+
     /// Set model.
     pub fn set_model(&mut self, model: String) {
         self.model = model;
@@ -325,6 +527,13 @@ impl LLMClient {
     }
 
     pub async fn list_models(&self) -> Result<Vec<String>> {
+        match self.provider {
+            Provider::Ollama => self.list_models_ollama().await,
+            Provider::OpenAI => self.list_models_openai().await,
+        }
+    }
+
+    async fn list_models_ollama(&self) -> Result<Vec<String>> {
         let response = self
             .client
             .get(format!("{}/api/tags", self.base_url))
@@ -353,13 +562,46 @@ impl LLMClient {
         Ok(models)
     }
 
+    async fn list_models_openai(&self) -> Result<Vec<String>> {
+        let response = self
+            .authorized_request(self.client.get(format!("{}/models", self.base_url)))?
+            .send()
+            .await
+            .context("failed to fetch OpenAI models")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            anyhow::bail!("OpenAI returned error {}: {}", status, error_text);
+        }
+
+        let response: OpenAIModelsResponse = response
+            .json()
+            .await
+            .context("failed to parse OpenAI models response")?;
+
+        let mut models = response
+            .data
+            .into_iter()
+            .map(|model| model.id)
+            .collect::<Vec<_>>();
+        models.sort();
+        models.dedup();
+        Ok(models)
+    }
+
     pub fn persist_model_to_home(&self, model: &str) -> Result<PathBuf> {
         let home_path = Self::home_settings_path()?;
-        Self::persist_model_to_path(&home_path, &self.base_url, model)?;
+        Self::persist_model_to_path(&home_path, self.provider, &self.base_url, model)?;
         Ok(home_path)
     }
 
-    fn persist_model_to_path(path: &Path, base_url: &str, model: &str) -> Result<()> {
+    fn persist_model_to_path(
+        path: &Path,
+        provider: Provider,
+        base_url: &str,
+        model: &str,
+    ) -> Result<()> {
         let model = model.trim();
         if model.is_empty() {
             return Err(anyhow!("model must not be empty"));
@@ -370,16 +612,48 @@ impl LLMClient {
                 .with_context(|| format!("failed to read settings file: {}", path.display()))?;
             let mut settings: PersistedSettings = serde_json::from_str(&raw)
                 .with_context(|| format!("invalid settings JSON: {}", path.display()))?;
-            settings.ollama.model = model.to_string();
-            if settings.ollama.url.trim().is_empty() {
-                settings.ollama.url = base_url.to_string();
+
+            match provider {
+                Provider::Ollama => {
+                    let ollama = settings.ollama.get_or_insert(PersistedOllamaSettings {
+                        url: base_url.to_string(),
+                        model: model.to_string(),
+                    });
+                    if ollama.url.trim().is_empty() {
+                        ollama.url = base_url.to_string();
+                    }
+                    ollama.model = model.to_string();
+                }
+                Provider::OpenAI => {
+                    let openai = settings.openai.get_or_insert(OpenAISettings {
+                        base_url: base_url.to_string(),
+                        api_key: String::new(),
+                        model: model.to_string(),
+                    });
+                    if openai.base_url.trim().is_empty() {
+                        openai.base_url = base_url.to_string();
+                    }
+                    openai.model = model.to_string();
+                }
             }
+
             settings
         } else {
-            PersistedSettings {
-                ollama: PersistedOllamaSettings {
-                    url: base_url.to_string(),
-                    model: model.to_string(),
+            match provider {
+                Provider::Ollama => PersistedSettings {
+                    ollama: Some(PersistedOllamaSettings {
+                        url: base_url.to_string(),
+                        model: model.to_string(),
+                    }),
+                    openai: None,
+                },
+                Provider::OpenAI => PersistedSettings {
+                    ollama: None,
+                    openai: Some(OpenAISettings {
+                        base_url: base_url.to_string(),
+                        api_key: String::new(),
+                        model: model.to_string(),
+                    }),
                 },
             }
         };
@@ -396,6 +670,102 @@ impl LLMClient {
             .with_context(|| format!("failed to write settings file: {}", path.display()))?;
 
         Ok(())
+    }
+}
+
+fn validate_non_empty(label: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        return Err(anyhow!("{label} must not be empty"));
+    }
+    Ok(())
+}
+
+fn build_agent_response(text: String, tool_uses: Vec<ToolUseCall>) -> AgentResponse {
+    let stop_reason = if tool_uses.is_empty() {
+        "end_turn".to_string()
+    } else {
+        "tool_use".to_string()
+    };
+
+    AgentResponse {
+        text,
+        stop_reason,
+        tool_uses,
+    }
+}
+
+fn map_message_for_openai(index: usize, message: &Value) -> Value {
+    let role = message["role"].as_str().unwrap_or("user");
+    match role {
+        "assistant" => {
+            let mut mapped = json!({
+                "role": "assistant",
+                "content": assistant_content_for_openai(message)
+            });
+
+            if let Some(tool_calls) = message["tool_calls"].as_array() {
+                mapped["tool_calls"] = Value::Array(
+                    tool_calls
+                        .iter()
+                        .enumerate()
+                        .map(|(tool_index, tool_call)| {
+                            let call_id = tool_call["id"]
+                                .as_str()
+                                .map(ToOwned::to_owned)
+                                .unwrap_or_else(|| format!("call_{index}_{tool_index}"));
+                            json!({
+                                "id": call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": tool_call["function"]["name"],
+                                    "arguments": stringify_tool_arguments(&tool_call["function"]["arguments"])
+                                }
+                            })
+                        })
+                        .collect(),
+                );
+            }
+
+            mapped
+        }
+        "tool" => {
+            if let Some(tool_call_id) = message["tool_call_id"].as_str() {
+                json!({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": message["content"].as_str().unwrap_or_default()
+                })
+            } else {
+                json!({
+                    "role": "user",
+                    "content": format!(
+                        "Tool {} returned:\n{}",
+                        message["tool_name"].as_str().unwrap_or("unknown"),
+                        message["content"].as_str().unwrap_or_default()
+                    )
+                })
+            }
+        }
+        _ => json!({
+            "role": role,
+            "content": message["content"].as_str().unwrap_or_default()
+        }),
+    }
+}
+
+fn assistant_content_for_openai(message: &Value) -> Value {
+    let content = message["content"].as_str().unwrap_or_default();
+    if content.is_empty() && message.get("tool_calls").is_some() {
+        Value::Null
+    } else {
+        Value::String(content.to_string())
+    }
+}
+
+fn stringify_tool_arguments(arguments: &Value) -> String {
+    match arguments {
+        Value::String(text) => text.clone(),
+        other => serde_json::to_string(other).unwrap_or_else(|_| "{}".to_string()),
     }
 }
 
@@ -419,8 +789,9 @@ mod tests {
         assert_eq!(path, home.path().join(".localcoder/settings.json"));
 
         let settings = LLMClient::load_settings_from_path(&path).unwrap();
-        assert_eq!(settings.ollama.url, DEFAULT_OLLAMA_URL);
-        assert_eq!(settings.ollama.model, DEFAULT_OLLAMA_MODEL);
+        let ollama = settings.ollama.unwrap();
+        assert_eq!(ollama.url, DEFAULT_OLLAMA_URL);
+        assert_eq!(ollama.model, DEFAULT_OLLAMA_MODEL);
     }
 
     #[test]
@@ -457,31 +828,73 @@ mod tests {
         .unwrap();
 
         let settings = LLMClient::load_settings_from_path(&path).unwrap();
-        assert_eq!(settings.ollama.url, "http://localhost:11434");
-        assert_eq!(settings.ollama.model, "qwen2.5-coder:7b");
+        let ollama = settings.ollama.unwrap();
+        assert_eq!(ollama.url, "http://localhost:11434");
+        assert_eq!(ollama.model, "qwen2.5-coder:7b");
     }
 
     #[test]
-    fn from_settings_sets_defaults() {
+    fn load_settings_from_path_prefers_openai_when_present() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("setting.json");
+        fs::write(
+            &path,
+            r#"{
+                "ollama":{"url":"http://localhost:11434","model":"qwen2.5-coder:7b"},
+                "openai":{"base_url":"https://api.openai.com/v1","api_key":"sk-test","model":"gpt-4o-mini"}
+            }"#,
+        )
+        .unwrap();
+
+        let settings = LLMClient::load_settings_from_path(&path).unwrap();
+        let openai = settings.openai.unwrap();
+        assert_eq!(openai.base_url, "https://api.openai.com/v1");
+        assert_eq!(openai.model, "gpt-4o-mini");
+    }
+
+    #[test]
+    fn from_settings_sets_ollama_defaults() {
         let client = LLMClient::from_settings(LLMSettings {
-            ollama: OllamaSettings {
+            ollama: Some(OllamaSettings {
                 url: "http://localhost:11434/".to_string(),
                 model: "qwen2.5-coder:7b".to_string(),
-            },
+            }),
+            openai: None,
         });
 
+        assert_eq!(client.provider, Provider::Ollama);
         assert_eq!(client.base_url(), "http://localhost:11434");
         assert_eq!(client.model(), "qwen2.5-coder:7b");
         assert_eq!(client.max_tokens(), 4096);
     }
 
     #[test]
-    fn set_model_updates_model() {
-        let mut client = LLMClient::from_settings(LLMSettings {
-            ollama: OllamaSettings {
+    fn from_settings_prefers_openai() {
+        let client = LLMClient::from_settings(LLMSettings {
+            ollama: Some(OllamaSettings {
                 url: "http://localhost:11434".to_string(),
                 model: "qwen2.5-coder:7b".to_string(),
-            },
+            }),
+            openai: Some(OpenAISettings {
+                base_url: "https://api.openai.com/v1/".to_string(),
+                api_key: "sk-test".to_string(),
+                model: "gpt-4o-mini".to_string(),
+            }),
+        });
+
+        assert_eq!(client.provider, Provider::OpenAI);
+        assert_eq!(client.base_url(), "https://api.openai.com/v1");
+        assert_eq!(client.model(), "gpt-4o-mini");
+    }
+
+    #[test]
+    fn set_model_updates_model() {
+        let mut client = LLMClient::from_settings(LLMSettings {
+            ollama: Some(OllamaSettings {
+                url: "http://localhost:11434".to_string(),
+                model: "qwen2.5-coder:7b".to_string(),
+            }),
+            openai: None,
         });
 
         client.set_model("llama3.2".to_string());
@@ -491,10 +904,11 @@ mod tests {
     #[test]
     fn set_max_tokens_updates_value() {
         let mut client = LLMClient::from_settings(LLMSettings {
-            ollama: OllamaSettings {
+            ollama: Some(OllamaSettings {
                 url: "http://localhost:11434".to_string(),
                 model: "qwen2.5-coder:7b".to_string(),
-            },
+            }),
+            openai: None,
         });
 
         client.set_max_tokens(2048);
@@ -502,35 +916,64 @@ mod tests {
     }
 
     #[test]
-    fn persist_model_to_path_creates_home_settings() {
+    fn persist_model_to_path_creates_ollama_settings() {
         let temp = tempdir().unwrap();
         let path = temp.path().join(".localcoder/settings.json");
 
-        LLMClient::persist_model_to_path(&path, "http://localhost:11434", "llama3.2").unwrap();
+        LLMClient::persist_model_to_path(
+            &path,
+            Provider::Ollama,
+            "http://localhost:11434",
+            "llama3.2",
+        )
+        .unwrap();
 
         let raw = fs::read_to_string(&path).unwrap();
         let settings: PersistedSettings = serde_json::from_str(&raw).unwrap();
-        assert_eq!(settings.ollama.url, "http://localhost:11434");
-        assert_eq!(settings.ollama.model, "llama3.2");
+        let ollama = settings.ollama.unwrap();
+        assert_eq!(ollama.url, "http://localhost:11434");
+        assert_eq!(ollama.model, "llama3.2");
     }
 
     #[test]
-    fn persist_model_to_path_preserves_existing_url() {
+    fn persist_model_to_path_updates_openai_model() {
         let temp = tempdir().unwrap();
         let path = temp.path().join(".localcoder/settings.json");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(
             &path,
-            r#"{"ollama":{"url":"http://remote-host:11434","model":"qwen2.5-coder:7b"}}"#,
+            r#"{"openai":{"base_url":"https://api.openai.com/v1","api_key":"sk-test","model":"gpt-4o-mini"}}"#,
         )
         .unwrap();
 
-        LLMClient::persist_model_to_path(&path, "http://localhost:11434", "deepseek-r1:8b")
-            .unwrap();
+        LLMClient::persist_model_to_path(
+            &path,
+            Provider::OpenAI,
+            "https://api.openai.com/v1",
+            "gpt-4.1-mini",
+        )
+        .unwrap();
 
         let raw = fs::read_to_string(&path).unwrap();
         let settings: PersistedSettings = serde_json::from_str(&raw).unwrap();
-        assert_eq!(settings.ollama.url, "http://remote-host:11434");
-        assert_eq!(settings.ollama.model, "deepseek-r1:8b");
+        let openai = settings.openai.unwrap();
+        assert_eq!(openai.base_url, "https://api.openai.com/v1");
+        assert_eq!(openai.api_key, "sk-test");
+        assert_eq!(openai.model, "gpt-4.1-mini");
+    }
+
+    #[test]
+    fn map_message_for_openai_preserves_tool_call_id() {
+        let message = json!({
+            "role": "tool",
+            "tool_call_id": "call_123",
+            "tool_name": "read",
+            "content": "ok"
+        });
+
+        let mapped = map_message_for_openai(0, &message);
+        assert_eq!(mapped["role"], "tool");
+        assert_eq!(mapped["tool_call_id"], "call_123");
+        assert_eq!(mapped["content"], "ok");
     }
 }

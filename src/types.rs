@@ -38,6 +38,7 @@ impl Message {
 /// A single tool call extracted from the Ollama response.
 #[derive(Debug, Clone)]
 pub struct ToolUseCall {
+    pub id: Option<String>,
     pub name: String,
     pub arguments: Value,
 }

@@ -106,6 +106,22 @@ The default config format is:
 }
 ```
 
+If you want to use OpenAI, add an `openai` section. When `openai` is present, Localcoder will prefer it over `ollama`.
+
+```json
+{
+  "ollama": {
+    "url": "http://localhost:11434",
+    "model": "qwen3.5:4b"
+  },
+  "openai": {
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "sk-...",
+    "model": "gpt-4o-mini"
+  }
+}
+```
+
 You can edit this file manually, or switch models from the REPL with the `/model` command.
 
 ---

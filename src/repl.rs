@@ -370,7 +370,7 @@ fn print_instructions(client: &LLMClient, app_config: &AppConfig) {
             "/<skill-name>".yellow()
         );
         println!("  - Type {} to open config menu", "/config".yellow());
-        println!("  - Type {} to switch Ollama model", "/model".yellow());
+        println!("  - Type {} to switch model", "/model".yellow());
         println!("  - Type {} to show help", "/help".yellow());
     } else {
         println!(
@@ -518,7 +518,7 @@ fn print_help() {
         "/config".yellow()
     );
     println!(
-        "  {}           - Select and persist Ollama model",
+        "  {}           - Select and persist active model",
         "/model".yellow()
     );
     println!("  {}             - Show this help", "/help".yellow());
@@ -1224,11 +1224,11 @@ async fn handle_commit_command(
 async fn select_model(rl: &mut DefaultEditor, client: &mut LLMClient) -> Result<()> {
     let models = client.list_models().await?;
     if models.is_empty() {
-        println!("\n{}", "⚠️ No models found from /api/tags".yellow());
+        println!("\n{}", "⚠️ No models found from provider endpoint".yellow());
         return Ok(());
     }
 
-    println!("\n{}", "📦 Available Ollama models:".cyan().bold());
+    println!("\n{}", "📦 Available models:".cyan().bold());
     for (index, model) in models.iter().enumerate() {
         let current = if model == client.model() {
             " (current)".green().to_string()
