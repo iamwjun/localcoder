@@ -227,7 +227,7 @@ localcoder/
 | HTTP 客户端 | reqwest 0.12 |
 | JSON 处理 | serde + serde_json 1.0 |
 | 命令行编辑 | rustyline 14.0 |
-| 错误处理 | anyhow + thiserror |
+| 错误处理 | anyhow |
 | 终端彩色 | colored 2.1 |
 | 流式处理 | futures 0.3 |
 

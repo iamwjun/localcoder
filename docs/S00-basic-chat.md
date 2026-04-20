@@ -67,7 +67,7 @@ rust/
 | HTTP 客户端 | reqwest | 0.12 |
 | JSON 序列化 | serde + serde_json | 1.0 |
 | 命令行编辑 | rustyline | 14.0 |
-| 错误处理 | anyhow + thiserror | 1.0 |
+| 错误处理 | anyhow | 1.0 |
 | 终端彩色 | colored | 2.1 |
 | 流式处理 | futures | 0.3 |
 

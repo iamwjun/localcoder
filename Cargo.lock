@@ -934,7 +934,6 @@ dependencies = [
  "serde_yaml",
  "tempfile",
  "termimad",
- "thiserror",
  "tokio",
 ]
 

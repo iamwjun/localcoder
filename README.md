@@ -227,7 +227,7 @@ localcoder/
 | HTTP client | reqwest 0.12 |
 | JSON handling | serde + serde_json 1.0 |
 | Line editing | rustyline 14.0 |
-| Error handling | anyhow + thiserror |
+| Error handling | anyhow |
 | Terminal colors | colored 2.1 |
 | Streaming utilities | futures 0.3 |
 
