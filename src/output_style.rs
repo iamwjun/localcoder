@@ -197,7 +197,11 @@ fn parse_style_file(path: &Path, source: OutputStyleSource) -> Result<OutputStyl
         .with_context(|| format!("failed to parse output style: {}", path.display()))
 }
 
-fn parse_style_text(raw: &str, fallback_name: &str, source: OutputStyleSource) -> Result<OutputStyle> {
+fn parse_style_text(
+    raw: &str,
+    fallback_name: &str,
+    source: OutputStyleSource,
+) -> Result<OutputStyle> {
     let normalized = raw.replace("\r\n", "\n");
     let (frontmatter, content) = split_frontmatter(&normalized)?;
     let name = frontmatter

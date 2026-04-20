@@ -91,7 +91,10 @@ impl PlanManager {
     }
 
     pub fn mode(&self) -> PlanMode {
-        self.runtime.lock().expect("plan runtime lock poisoned").mode
+        self.runtime
+            .lock()
+            .expect("plan runtime lock poisoned")
+            .mode
     }
 
     pub fn is_planning(&self) -> bool {
@@ -105,7 +108,9 @@ impl PlanManager {
         }
         self.persist()?;
 
-        let mut message = String::from("Entered plan mode. Only read-only tools and planning tools are allowed now.");
+        let mut message = String::from(
+            "Entered plan mode. Only read-only tools and planning tools are allowed now.",
+        );
         if let Some(reason) = reason.map(str::trim).filter(|reason| !reason.is_empty()) {
             message.push_str(&format!("\nReason: {}", reason));
         }
@@ -209,7 +214,11 @@ impl PlanManager {
     }
 
     fn persist(&self) -> Result<()> {
-        let state = self.runtime.lock().expect("plan runtime lock poisoned").clone();
+        let state = self
+            .runtime
+            .lock()
+            .expect("plan runtime lock poisoned")
+            .clone();
         let json_path = self.root.join(PLAN_STATE_FILENAME);
         let markdown_path = self.root.join(PLAN_MARKDOWN_FILENAME);
 
@@ -219,8 +228,9 @@ impl PlanManager {
         )
         .with_context(|| format!("failed to write plan state: {}", json_path.display()))?;
 
-        fs::write(&markdown_path, render_markdown(&state))
-            .with_context(|| format!("failed to write todo markdown: {}", markdown_path.display()))?;
+        fs::write(&markdown_path, render_markdown(&state)).with_context(|| {
+            format!("failed to write todo markdown: {}", markdown_path.display())
+        })?;
         Ok(())
     }
 }
@@ -233,8 +243,8 @@ fn load_state(root: &Path) -> Result<PlanState> {
 
     let raw = fs::read_to_string(&path)
         .with_context(|| format!("failed to read plan state: {}", path.display()))?;
-    let state: PlanState =
-        serde_json::from_str(&raw).with_context(|| format!("invalid plan state: {}", path.display()))?;
+    let state: PlanState = serde_json::from_str(&raw)
+        .with_context(|| format!("invalid plan state: {}", path.display()))?;
     Ok(state)
 }
 
@@ -282,7 +292,11 @@ fn render_todos(todos: &[TodoItem]) -> String {
 }
 
 fn render_markdown(state: &PlanState) -> String {
-    format!("# Plan\n\nMode: {}\n\n{}\n", state.mode, render_todos(&state.todos))
+    format!(
+        "# Plan\n\nMode: {}\n\n{}\n",
+        state.mode,
+        render_todos(&state.todos)
+    )
 }
 
 fn checkbox(status: TodoStatus) -> &'static str {
@@ -294,7 +308,10 @@ fn checkbox(status: TodoStatus) -> &'static str {
 }
 
 fn plan_root(project_dir: &Path) -> Result<PathBuf> {
-    plan_root_with_home(project_dir, std::env::var_os("HOME").as_deref().map(Path::new))
+    plan_root_with_home(
+        project_dir,
+        std::env::var_os("HOME").as_deref().map(Path::new),
+    )
 }
 
 fn plan_root_with_home(project_dir: &Path, home: Option<&Path>) -> Result<PathBuf> {
@@ -305,7 +322,11 @@ fn plan_root_with_home(project_dir: &Path, home: Option<&Path>) -> Result<PathBu
     let hash = format!("{:016x}", hasher.finish());
 
     let home = home.ok_or_else(|| anyhow!("$HOME is not set"))?;
-    Ok(home.join(".localcoder").join("projects").join(hash).join("plan"))
+    Ok(home
+        .join(".localcoder")
+        .join("projects")
+        .join(hash)
+        .join("plan"))
 }
 
 #[cfg(test)]

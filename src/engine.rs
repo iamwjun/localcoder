@@ -225,7 +225,9 @@ mod tests {
         let cwd = TempDir::new().unwrap();
         let manager = SkillManager::new(cwd.path()).unwrap();
         manager.set_session_id(Some("s1"));
-        manager.resolve_and_activate("simplify", "src/main.rs").unwrap();
+        manager
+            .resolve_and_activate("simplify", "src/main.rs")
+            .unwrap();
 
         let mut registry = ToolRegistry::new();
         registry.attach_skill_manager(manager);

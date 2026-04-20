@@ -56,7 +56,10 @@ async fn test_invalid_api_key() {
             if !response.status().is_success() {
                 let status = response.status();
                 let error_text = response.text().await.unwrap_or_default();
-                println!("{}", format!("   ✓ Caught expected error: {} - {}", status, error_text).green());
+                println!(
+                    "{}",
+                    format!("   ✓ Caught expected error: {} - {}", status, error_text).green()
+                );
             }
         }
         Err(e) => {

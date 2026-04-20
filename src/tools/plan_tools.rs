@@ -163,7 +163,10 @@ mod tests {
     async fn enter_plan_mode_updates_state() {
         let cwd = TempDir::new().unwrap();
         let tool = EnterPlanModeTool::new(PlanManager::new(cwd.path()).unwrap());
-        let result = tool.execute(json!({"reason":"inspect first"})).await.unwrap();
+        let result = tool
+            .execute(json!({"reason":"inspect first"}))
+            .await
+            .unwrap();
         assert!(result.contains("Entered plan mode"));
     }
 

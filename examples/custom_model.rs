@@ -12,9 +12,10 @@ use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    dotenv::dotenv().ok();
-
-    println!("{}", "=== Example 4: Custom Model Parameters ===\n".cyan().bold());
+    println!(
+        "{}",
+        "=== Example 4: Custom Model Parameters ===\n".cyan().bold()
+    );
 
     let api_key = std::env::var("ANTHROPIC_API_KEY")
         .expect("Please set the ANTHROPIC_API_KEY environment variable");
@@ -23,9 +24,21 @@ async fn main() -> Result<()> {
 
     // Different parameter configurations
     let configs = vec![
-        ("claude-sonnet-4-20250514", 0.0, "Most conservative (temperature=0)"),
-        ("claude-sonnet-4-20250514", 0.7, "Moderate creativity (temperature=0.7)"),
-        ("claude-opus-4-20250514", 1.0, "Maximum creativity (temperature=1.0)"),
+        (
+            "claude-sonnet-4-20250514",
+            0.0,
+            "Most conservative (temperature=0)",
+        ),
+        (
+            "claude-sonnet-4-20250514",
+            0.7,
+            "Moderate creativity (temperature=0.7)",
+        ),
+        (
+            "claude-opus-4-20250514",
+            1.0,
+            "Maximum creativity (temperature=1.0)",
+        ),
     ];
 
     for (model, temperature, desc) in configs {
@@ -62,7 +75,11 @@ async fn main() -> Result<()> {
         println!();
     }
 
-    println!("{}", "💡 Tip: higher temperature values produce more creative but less predictable responses".yellow());
+    println!(
+        "{}",
+        "💡 Tip: higher temperature values produce more creative but less predictable responses"
+            .yellow()
+    );
 
     Ok(())
 }

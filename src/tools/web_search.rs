@@ -91,7 +91,10 @@ pub async fn search_web(query: &str, domain: Option<&str>, limit: usize) -> Resu
         return Err(anyhow!("WebSearch: request failed with HTTP {}", status));
     }
 
-    let rss = response.text().await.context("failed to read web search body")?;
+    let rss = response
+        .text()
+        .await
+        .context("failed to read web search body")?;
     let results = parse_bing_rss_results(&rss)
         .into_iter()
         .take(limit)
@@ -113,7 +116,9 @@ fn build_http_client() -> Result<Client> {
 }
 
 fn clamp_limit(value: Option<u64>) -> usize {
-    value.unwrap_or(DEFAULT_RESULTS as u64).clamp(1, MAX_RESULTS as u64) as usize
+    value
+        .unwrap_or(DEFAULT_RESULTS as u64)
+        .clamp(1, MAX_RESULTS as u64) as usize
 }
 
 fn sanitize_domain(domain: &str) -> Result<String> {
@@ -167,11 +172,7 @@ fn capture_xml_text(regex: &Regex, item: &str) -> Option<String> {
         .trim();
     let decoded = decode_html_entities(raw);
     let clean = collapse_whitespace(&strip_tags(&decoded));
-    if clean.is_empty() {
-        None
-    } else {
-        Some(clean)
-    }
+    if clean.is_empty() { None } else { Some(clean) }
 }
 
 fn strip_tags(input: &str) -> String {

@@ -8,9 +8,9 @@
  */
 
 use crate::tools::Tool;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use glob::glob;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -103,7 +103,9 @@ impl Tool for GlobTool {
             .iter()
             .map(|p| {
                 if let Ok(rel) = p.strip_prefix(&cwd) {
-                    rel.to_str().unwrap_or(p.to_str().unwrap_or("?")).to_string()
+                    rel.to_str()
+                        .unwrap_or(p.to_str().unwrap_or("?"))
+                        .to_string()
                 } else {
                     p.to_str().unwrap_or("?").to_string()
                 }
@@ -112,7 +114,9 @@ impl Tool for GlobTool {
 
         let mut output = filenames.join("\n");
         if truncated {
-            output.push_str("\n(Results are truncated. Consider using a more specific path or pattern.)");
+            output.push_str(
+                "\n(Results are truncated. Consider using a more specific path or pattern.)",
+            );
         }
 
         Ok(output)

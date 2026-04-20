@@ -25,13 +25,12 @@
 ✅ **工具脚本**
 - build.sh - 构建脚本
 - start.sh - 快速启动
-- .env.example - 配置模板
+- 环境变量通过 shell 显式导出
 
 ## 文件清单
 
 ```
 rust/
-├── .env.example          ← 环境变量模板
 ├── .gitignore            ← Git 忽略规则
 ├── COMPARISON.md         ← JS vs Rust 详细对比 (150+ 行)
 ├── Cargo.toml            ← 项目配置

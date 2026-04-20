@@ -127,7 +127,12 @@ impl MemoryStore {
 
         Ok(headers
             .into_iter()
-            .map(|m| format!("- [{}] {} ({}) — {}", m.memory_type, m.name, m.filename, m.description))
+            .map(|m| {
+                format!(
+                    "- [{}] {} ({}) — {}",
+                    m.memory_type, m.name, m.filename, m.description
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n"))
     }
@@ -160,17 +165,23 @@ impl MemoryStore {
                 continue;
             };
 
-            let name = frontmatter
-                .get("name")
-                .cloned()
-                .unwrap_or_else(|| path.file_stem().and_then(|s| s.to_str()).unwrap_or("memory").to_string());
+            let name = frontmatter.get("name").cloned().unwrap_or_else(|| {
+                path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("memory")
+                    .to_string()
+            });
             let description = frontmatter
                 .get("description")
                 .cloned()
                 .unwrap_or_else(|| "No description".to_string());
 
             entries.push(MemoryHeader {
-                filename: path.file_name().and_then(|s| s.to_str()).unwrap_or_default().to_string(),
+                filename: path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or_default()
+                    .to_string(),
                 name,
                 description,
                 memory_type,
@@ -216,7 +227,12 @@ impl MemoryStore {
         let existing = self
             .list_headers()?
             .into_iter()
-            .map(|m| format!("- [{}] {} ({}) — {}", m.memory_type, m.name, m.filename, m.description))
+            .map(|m| {
+                format!(
+                    "- [{}] {} ({}) — {}",
+                    m.memory_type, m.name, m.filename, m.description
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n");
 
@@ -249,7 +265,11 @@ Conversation:\n{}",
     fn persist_memories(&self, memories: Vec<ExtractedMemory>) -> Result<Vec<SavedMemory>> {
         let mut saved = Vec::new();
         for memory in memories {
-            let filename = normalize_memory_filename(memory.filename.as_deref(), &memory.name, memory.memory_type);
+            let filename = normalize_memory_filename(
+                memory.filename.as_deref(),
+                &memory.name,
+                memory.memory_type,
+            );
             let path = self.root.join(&filename);
             let body = format!(
                 "---\nname: {}\ndescription: {}\ntype: {}\n---\n\n{}\n",
@@ -280,17 +300,28 @@ Conversation:\n{}",
         let headers = self.list_headers()?;
         let index = headers
             .iter()
-            .map(|m| format!("- [{}]({}) — [{}] {}", m.name, m.filename, m.memory_type, m.description))
+            .map(|m| {
+                format!(
+                    "- [{}]({}) — [{}] {}",
+                    m.name, m.filename, m.memory_type, m.description
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n");
-        fs::write(self.root.join(MEMORY_INDEX_FILENAME), format!("{}\n", index))
-            .with_context(|| format!("failed to write memory index in {}", self.root.display()))?;
+        fs::write(
+            self.root.join(MEMORY_INDEX_FILENAME),
+            format!("{}\n", index),
+        )
+        .with_context(|| format!("failed to write memory index in {}", self.root.display()))?;
         Ok(())
     }
 }
 
 fn memory_root(project_dir: &Path) -> Result<PathBuf> {
-    memory_root_with_home(project_dir, std::env::var_os("HOME").as_deref().map(Path::new))
+    memory_root_with_home(
+        project_dir,
+        std::env::var_os("HOME").as_deref().map(Path::new),
+    )
 }
 
 fn memory_root_with_home(project_dir: &Path, home: Option<&Path>) -> Result<PathBuf> {
@@ -331,14 +362,17 @@ fn format_recent_messages(messages: &[Value]) -> String {
 }
 
 fn parse_extract_response(raw: &str) -> Result<Vec<ExtractedMemory>> {
-    let json_text = extract_json_text(raw).ok_or_else(|| anyhow!("memory extractor did not return JSON"))?;
+    let json_text =
+        extract_json_text(raw).ok_or_else(|| anyhow!("memory extractor did not return JSON"))?;
     let response: ExtractResponse =
         serde_json::from_str(&json_text).context("failed to parse memory extractor JSON")?;
     Ok(response
         .memories
         .into_iter()
         .filter(|m| {
-            !m.name.trim().is_empty() && !m.description.trim().is_empty() && !m.content.trim().is_empty()
+            !m.name.trim().is_empty()
+                && !m.description.trim().is_empty()
+                && !m.content.trim().is_empty()
         })
         .collect())
 }
@@ -416,7 +450,11 @@ fn parse_memory_type(raw: &str) -> Option<MemoryType> {
     }
 }
 
-fn normalize_memory_filename(filename: Option<&str>, name: &str, memory_type: MemoryType) -> String {
+fn normalize_memory_filename(
+    filename: Option<&str>,
+    name: &str,
+    memory_type: MemoryType,
+) -> String {
     if let Some(filename) = filename {
         let clean = sanitize_filename(filename);
         if !clean.is_empty() {
@@ -529,7 +567,8 @@ mod tests {
                 name: "User profile".to_string(),
                 description: "Senior Go engineer".to_string(),
                 memory_type: MemoryType::User,
-                content: "The user is a senior Go engineer and prefers concise explanations.".to_string(),
+                content: "The user is a senior Go engineer and prefers concise explanations."
+                    .to_string(),
             }])
             .unwrap();
 

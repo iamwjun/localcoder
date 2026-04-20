@@ -25,7 +25,6 @@ use std::env;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    dotenv::dotenv().ok();
     api::LLMClient::ensure_settings_file()?;
     let cwd = env::current_dir()?;
 

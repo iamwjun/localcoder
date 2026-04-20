@@ -165,13 +165,11 @@ impl Tool for LspTool {
                     .request_for_file(&file, "textDocument/documentSymbol", params)
                     .await?
                 {
-                    Some((server_name, value)) => {
-                        Ok(format_document_symbols(
-                            &server_name,
-                            &value,
-                            self.manager.workspace_root(),
-                        )?)
-                    }
+                    Some((server_name, value)) => Ok(format_document_symbols(
+                        &server_name,
+                        &value,
+                        self.manager.workspace_root(),
+                    )?),
                     None => Ok(no_server_for_file(&file)),
                 }
             }
@@ -531,7 +529,11 @@ fn format_hover(server_name: &str, value: &Value) -> Result<String> {
     ))
 }
 
-fn format_document_symbols(server_name: &str, value: &Value, workspace_root: &Path) -> Result<String> {
+fn format_document_symbols(
+    server_name: &str,
+    value: &Value,
+    workspace_root: &Path,
+) -> Result<String> {
     let mut out = format!("Operation: document_symbols\nServer: {}", server_name);
     if value.is_null() {
         out.push_str("\nNo symbols found.");
@@ -827,9 +829,14 @@ fn count_document_symbols(symbols: &[DocumentSymbol]) -> usize {
         .sum()
 }
 
-fn render_workspace_symbol_location(location: &WorkspaceSymbolLocation, workspace_root: &Path) -> String {
+fn render_workspace_symbol_location(
+    location: &WorkspaceSymbolLocation,
+    workspace_root: &Path,
+) -> String {
     match location {
-        WorkspaceSymbolLocation::Location(location) => format_location_line(location, workspace_root),
+        WorkspaceSymbolLocation::Location(location) => {
+            format_location_line(location, workspace_root)
+        }
         WorkspaceSymbolLocation::UriOnly { uri } => display_path_for_uri(uri, workspace_root),
     }
 }

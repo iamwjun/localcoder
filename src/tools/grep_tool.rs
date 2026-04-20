@@ -20,10 +20,10 @@
  */
 
 use crate::tools::Tool;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use ignore::WalkBuilder;
 use regex::RegexBuilder;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -362,17 +362,17 @@ fn search_count(
     );
 
     let mut output = slice.join("\n");
-    output.push_str(&format!("\nTotal: {} matches in {} files", total, counts.len()));
+    output.push_str(&format!(
+        "\nTotal: {} matches in {} files",
+        total,
+        counts.len()
+    ));
     Ok(output)
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
-fn passes_filters(
-    path: &Path,
-    type_exts: &Option<Vec<&str>>,
-    glob_filter: Option<&str>,
-) -> bool {
+fn passes_filters(path: &Path, type_exts: &Option<Vec<&str>>, glob_filter: Option<&str>) -> bool {
     // Type filter
     if let Some(exts) = type_exts {
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -449,7 +449,9 @@ fn glob_match_single(pattern: &str, name: &str) -> bool {
 fn relativize(path: &Path) -> String {
     let cwd = env::current_dir().unwrap_or_default();
     if let Ok(rel) = path.strip_prefix(&cwd) {
-        rel.to_str().unwrap_or(path.to_str().unwrap_or("?")).to_string()
+        rel.to_str()
+            .unwrap_or(path.to_str().unwrap_or("?"))
+            .to_string()
     } else {
         path.to_str().unwrap_or("?").to_string()
     }
@@ -457,12 +459,7 @@ fn relativize(path: &Path) -> String {
 
 /// Apply offset + head_limit pagination.
 fn apply_pagination(items: &[String], offset: usize, limit: usize) -> Vec<String> {
-    items
-        .iter()
-        .skip(offset)
-        .take(limit)
-        .cloned()
-        .collect()
+    items.iter().skip(offset).take(limit).cloned().collect()
 }
 
 #[cfg(test)]
@@ -601,9 +598,7 @@ mod tests {
 
     #[tokio::test]
     async fn grep_invalid_regex_errors() {
-        let result = GrepTool
-            .execute(json!({"pattern": "[invalid"}))
-            .await;
+        let result = GrepTool.execute(json!({"pattern": "[invalid"})).await;
         assert!(result.is_err());
     }
 

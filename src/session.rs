@@ -114,11 +114,13 @@ impl SessionStore {
 
         for message in messages {
             let event = message_to_event(message)?;
-            let line = serde_json::to_string(&event).context("failed to serialize session event")?;
+            let line =
+                serde_json::to_string(&event).context("failed to serialize session event")?;
             writeln!(file, "{}", line).context("failed to rewrite session line")?;
         }
 
-        file.flush().context("failed to flush rewritten session file")?;
+        file.flush()
+            .context("failed to flush rewritten session file")?;
         Ok(())
     }
 
@@ -252,7 +254,10 @@ fn now_ts() -> u64 {
 }
 
 fn sessions_project_dir(project_dir: &Path) -> Result<PathBuf> {
-    sessions_project_dir_with_home(project_dir, std::env::var_os("HOME").as_deref().map(Path::new))
+    sessions_project_dir_with_home(
+        project_dir,
+        std::env::var_os("HOME").as_deref().map(Path::new),
+    )
 }
 
 fn sessions_project_dir_with_home(project_dir: &Path, home: Option<&Path>) -> Result<PathBuf> {
@@ -294,7 +299,10 @@ mod tests {
         let assistant_event = message_to_event(&assistant).unwrap();
 
         assert_eq!(event_to_message(&user_event).unwrap()["role"], "user");
-        assert_eq!(event_to_message(&assistant_event).unwrap()["role"], "assistant");
+        assert_eq!(
+            event_to_message(&assistant_event).unwrap()["role"],
+            "assistant"
+        );
     }
 
     #[test]
@@ -307,7 +315,11 @@ mod tests {
             id: "test".to_string(),
             path: path.join("test.jsonl"),
         };
-        OpenOptions::new().create(true).append(true).open(&store.path).unwrap();
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&store.path)
+            .unwrap();
 
         store
             .append_message(&json!({"role":"user","content":"ping"}))
@@ -332,8 +344,16 @@ mod tests {
             id: "latest".to_string(),
             path: path.join("latest.jsonl"),
         };
-        OpenOptions::new().create(true).append(true).open(&store.path).unwrap();
-        let latest = list_with_home(project.path(), Some(fake_home.path())).unwrap().into_iter().next().unwrap();
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&store.path)
+            .unwrap();
+        let latest = list_with_home(project.path(), Some(fake_home.path()))
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
 
         assert_eq!(latest.id, store.id);
     }
@@ -348,7 +368,11 @@ mod tests {
             id: "list".to_string(),
             path: path.join("list.jsonl"),
         };
-        OpenOptions::new().create(true).append(true).open(&store.path).unwrap();
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&store.path)
+            .unwrap();
         let sessions = list_with_home(project.path(), Some(fake_home.path())).unwrap();
 
         assert!(!sessions.is_empty());
@@ -365,8 +389,14 @@ mod tests {
             id: "rewrite".to_string(),
             path: path.join("rewrite.jsonl"),
         };
-        OpenOptions::new().create(true).append(true).open(&store.path).unwrap();
-        store.append_message(&json!({"role":"user","content":"old"})).unwrap();
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&store.path)
+            .unwrap();
+        store
+            .append_message(&json!({"role":"user","content":"old"}))
+            .unwrap();
 
         store
             .replace_messages(&[
@@ -394,7 +424,10 @@ mod tests {
             if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
                 continue;
             }
-            let modified = entry.metadata().and_then(|m| m.modified()).unwrap_or(UNIX_EPOCH);
+            let modified = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(UNIX_EPOCH);
             candidates.push((path, modified));
         }
 
@@ -402,7 +435,11 @@ mod tests {
         Ok(candidates
             .into_iter()
             .map(|(path, _)| SessionStore {
-                id: path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string(),
+                id: path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or_default()
+                    .to_string(),
                 path,
             })
             .collect())

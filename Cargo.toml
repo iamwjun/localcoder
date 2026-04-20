@@ -20,8 +20,6 @@ anyhow = "1.0"
 thiserror = "1.0"
 # CLI interaction
 rustyline = "14.0"
-# Environment variables
-dotenv = "0.15"
 # Terminal colors
 colored = "2.1"
 # Stream processing

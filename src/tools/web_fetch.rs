@@ -80,7 +80,10 @@ pub async fn fetch_url(url: &str, prompt: Option<&str>, max_chars: usize) -> Res
         .and_then(|value| value.to_str().ok())
         .unwrap_or("unknown")
         .to_string();
-    let raw = response.text().await.context("failed to read response body")?;
+    let raw = response
+        .text()
+        .await
+        .context("failed to read response body")?;
 
     let (title, body) = if is_html_content_type(&content_type) {
         let title = extract_html_title(&raw);
@@ -176,11 +179,7 @@ fn extract_html_title(html: &str) -> Option<String> {
     let captures = regex.captures(html)?;
     let title = decode_html_entities(captures.get(1)?.as_str());
     let title = collapse_whitespace(&strip_tags(&title));
-    if title.is_empty() {
-        None
-    } else {
-        Some(title)
-    }
+    if title.is_empty() { None } else { Some(title) }
 }
 
 fn html_to_markdown_like(html: &str) -> String {
@@ -320,7 +319,11 @@ fn focus_content(content: &str, prompt: Option<&str>) -> String {
     }
 
     scored.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    let mut indices = scored.into_iter().take(8).map(|(index, _)| index).collect::<Vec<_>>();
+    let mut indices = scored
+        .into_iter()
+        .take(8)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
     indices.sort_unstable();
 
     indices

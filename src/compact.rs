@@ -34,14 +34,7 @@ pub async fn force_compact(client: &LLMClient, messages: &mut Vec<Value>) -> Res
 pub fn estimate_tokens(messages: &[Value]) -> usize {
     messages
         .iter()
-        .map(|m| {
-            m["content"]
-                .as_str()
-                .unwrap_or_default()
-                .chars()
-                .count()
-                / CHARS_PER_TOKEN
-        })
+        .map(|m| m["content"].as_str().unwrap_or_default().chars().count() / CHARS_PER_TOKEN)
         .sum()
 }
 

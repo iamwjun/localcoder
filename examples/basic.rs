@@ -12,8 +12,6 @@ use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    dotenv::dotenv().ok();
-
     println!("{}", "=== Example 1: Basic API Call ===\n".cyan().bold());
 
     let api_key = std::env::var("ANTHROPIC_API_KEY")

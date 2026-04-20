@@ -68,17 +68,15 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
 
                 if input.starts_with('/') {
                     if command_arg(input, "/resume").is_some() {
-                        if let Err(e) =
-                            handle_resume_command(
-                                &mut rl,
-                                &cwd,
-                                skill_manager.as_ref(),
-                                &mut memory_store,
-                                &mut session,
-                                &mut messages,
-                                &mut display_history,
-                            )
-                        {
+                        if let Err(e) = handle_resume_command(
+                            &mut rl,
+                            &cwd,
+                            skill_manager.as_ref(),
+                            &mut memory_store,
+                            &mut session,
+                            &mut messages,
+                            &mut display_history,
+                        ) {
                             eprintln!("\n{} {}", "❌ Resume failed:".red().bold(), e);
                         }
                         continue;
@@ -354,19 +352,31 @@ fn print_instructions(client: &LLMClient, app_config: &AppConfig) {
         println!("  - Type {} to compact long context", "/compact".yellow());
         println!("  - Type {} to show git diff", "/diff".yellow());
         println!("  - Type {} to review current diff", "/review".yellow());
-        println!("  - Type {} to generate and run git commit", "/commit".yellow());
+        println!(
+            "  - Type {} to generate and run git commit",
+            "/commit".yellow()
+        );
         println!("  - Type {} to list saved memories", "/memory".yellow());
-        println!("  - Type {} to list or switch output styles", "/output-style".yellow());
+        println!(
+            "  - Type {} to list or switch output styles",
+            "/output-style".yellow()
+        );
         println!("  - Type {} to run a web search", "/web <query>".yellow());
         println!("  - Type {} to fetch a web page", "/fetch <url>".yellow());
         println!("  - Type {} to show or toggle plan mode", "/plan".yellow());
         println!("  - Type {} to list available skills", "/skills".yellow());
-        println!("  - Type {} to invoke a user skill", "/<skill-name>".yellow());
+        println!(
+            "  - Type {} to invoke a user skill",
+            "/<skill-name>".yellow()
+        );
         println!("  - Type {} to open config menu", "/config".yellow());
         println!("  - Type {} to switch Ollama model", "/model".yellow());
         println!("  - Type {} to show help", "/help".yellow());
     } else {
-        println!("  - Tips are disabled. Use {} for all commands", "/help".yellow());
+        println!(
+            "  - Tips are disabled. Use {} for all commands",
+            "/help".yellow()
+        );
     }
     println!();
 
@@ -375,7 +385,11 @@ fn print_instructions(client: &LLMClient, app_config: &AppConfig) {
         "{} theme={} tips={}",
         "⚙️  UI:".cyan().bold(),
         app_config.theme.to_string().white(),
-        if app_config.tips { "on".green() } else { "off".red() }
+        if app_config.tips {
+            "on".green()
+        } else {
+            "off".red()
+        }
     );
     println!(
         "{} {}",
@@ -445,26 +459,68 @@ fn print_help() {
         "  {}          - View conversation history (JSON format)",
         "/history".yellow()
     );
-    println!("  {}           - List and resume a previous session", "/resume".yellow());
-    println!("  {}           - Manually compact conversation context", "/compact".yellow());
-    println!("  {}              - Show current git diff", "/diff".yellow());
-    println!("  {}            - Review current git diff with the model", "/review".yellow());
-    println!("  {}    - Generate a commit message and commit", "/commit [title]".yellow());
+    println!(
+        "  {}           - List and resume a previous session",
+        "/resume".yellow()
+    );
+    println!(
+        "  {}           - Manually compact conversation context",
+        "/compact".yellow()
+    );
+    println!(
+        "  {}              - Show current git diff",
+        "/diff".yellow()
+    );
+    println!(
+        "  {}            - Review current git diff with the model",
+        "/review".yellow()
+    );
+    println!(
+        "  {}    - Generate a commit message and commit",
+        "/commit [title]".yellow()
+    );
     println!("  {}           - List saved memories", "/memory".yellow());
-    println!("  {}      - List or switch output styles", "/output-style [name]".yellow());
-    println!("  {}          - Search the web directly", "/web <query>".yellow());
-    println!("  {}         - Fetch a public web page", "/fetch <url>".yellow());
+    println!(
+        "  {}      - List or switch output styles",
+        "/output-style [name]".yellow()
+    );
+    println!(
+        "  {}          - Search the web directly",
+        "/web <query>".yellow()
+    );
+    println!(
+        "  {}         - Fetch a public web page",
+        "/fetch <url>".yellow()
+    );
     println!("  {}             - Show plan status", "/plan".yellow());
-    println!("  {}        - Enable plan mode manually", "/plan on".yellow());
-    println!("  {}       - Disable plan mode manually", "/plan off".yellow());
-    println!("  {}     - Clear persisted todo list", "/plan clear".yellow());
-    println!("  {}           - List available user skills", "/skills".yellow());
-    println!("  {}     - Invoke a user skill by slash command", "/<skill-name> [args]".yellow());
+    println!(
+        "  {}        - Enable plan mode manually",
+        "/plan on".yellow()
+    );
+    println!(
+        "  {}       - Disable plan mode manually",
+        "/plan off".yellow()
+    );
+    println!(
+        "  {}     - Clear persisted todo list",
+        "/plan clear".yellow()
+    );
+    println!(
+        "  {}           - List available user skills",
+        "/skills".yellow()
+    );
+    println!(
+        "  {}     - Invoke a user skill by slash command",
+        "/<skill-name> [args]".yellow()
+    );
     println!(
         "  {}           - Configure UI settings (Theme / Tips)",
         "/config".yellow()
     );
-    println!("  {}           - Select and persist Ollama model", "/model".yellow());
+    println!(
+        "  {}           - Select and persist Ollama model",
+        "/model".yellow()
+    );
     println!("  {}             - Show this help", "/help".yellow());
     println!("  {}            - Show message count", "/count".yellow());
     println!("  {}          - Show current version", "/version".yellow());
@@ -484,7 +540,9 @@ async fn maybe_auto_compact(
         *display_history = rebuild_display_history(messages);
         println!(
             "{} {}",
-            "⚡ Context compacted automatically. Estimated tokens:".cyan().bold(),
+            "⚡ Context compacted automatically. Estimated tokens:"
+                .cyan()
+                .bold(),
             compact::estimate_tokens(messages)
         );
     }
@@ -527,8 +585,12 @@ async fn run_user_turn(
         maybe_auto_compact(client, session, messages, display_history).await?;
 
         let before_len = messages.len();
-        let system_prompt =
-            build_base_system_prompt(memory_store, output_style_manager, app_config, skill_manager)?;
+        let system_prompt = build_base_system_prompt(
+            memory_store,
+            output_style_manager,
+            app_config,
+            skill_manager,
+        )?;
 
         match engine::run_agent_loop_with_system_prompt(
             client,
@@ -696,7 +758,10 @@ fn handle_plan_command(plan_manager: &PlanManager, args: &str) -> Result<()> {
             println!("{}", plan_manager.clear_todos()?);
         }
         _ => {
-            println!("{}", "Unknown /plan option. Use /plan, /plan on, /plan off, or /plan clear".yellow());
+            println!(
+                "{}",
+                "Unknown /plan option. Use /plan, /plan on, /plan off, or /plan clear".yellow()
+            );
         }
     }
     Ok(())
@@ -771,7 +836,10 @@ fn handle_config_command(
     println!("  2. Tips");
     println!();
 
-    let input = rl.readline(&format!("{} ", "Select option (Enter to cancel) >".cyan().bold()))?;
+    let input = rl.readline(&format!(
+        "{} ",
+        "Select option (Enter to cancel) >".cyan().bold()
+    ))?;
     let input = input.trim();
     if input.is_empty() {
         println!("{}", "Config cancelled".yellow());
@@ -799,7 +867,10 @@ fn configure_theme(
     println!("  current: {}", app_config.theme.to_string().white());
     println!();
 
-    let input = rl.readline(&format!("{} ", "Select theme (Enter to cancel) >".cyan().bold()))?;
+    let input = rl.readline(&format!(
+        "{} ",
+        "Select theme (Enter to cancel) >".cyan().bold()
+    ))?;
     let input = input.trim();
     if input.is_empty() {
         println!("{}", "Theme change cancelled".yellow());
@@ -837,7 +908,11 @@ fn configure_tips(
     println!("  2. off");
     println!(
         "  current: {}",
-        if app_config.tips { "on".green() } else { "off".red() }
+        if app_config.tips {
+            "on".green()
+        } else {
+            "off".red()
+        }
     );
     println!();
 
@@ -864,7 +939,11 @@ fn configure_tips(
     println!(
         "{} {} ({})",
         "✅ Tips updated:".green(),
-        if app_config.tips { "on".green() } else { "off".red() },
+        if app_config.tips {
+            "on".green()
+        } else {
+            "off".red()
+        },
         path.display()
     );
     Ok(())
@@ -887,8 +966,14 @@ fn handle_resume_command(
 
     println!("\n{}", "📚 Available sessions:".cyan().bold());
     for (index, s) in sessions.iter().enumerate() {
-        let preview = session_last_user_preview(s).unwrap_or_else(|_| "(failed to load)".to_string());
-        println!("  {}. {} {}", index + 1, preview.white(), format!("[{}]", s.id).dimmed());
+        let preview =
+            session_last_user_preview(s).unwrap_or_else(|_| "(failed to load)".to_string());
+        println!(
+            "  {}. {} {}",
+            index + 1,
+            preview.white(),
+            format!("[{}]", s.id).dimmed()
+        );
     }
     println!();
 
@@ -1100,8 +1185,15 @@ async fn handle_commit_command(
         anyhow::bail!("model returned an empty commit message");
     }
 
-    println!("{} {}", "Suggested commit message:".cyan().bold(), suggested.white());
-    let confirm = rl.readline(&format!("{} ", "Commit with this message? [Y/n/e] >".cyan().bold()))?;
+    println!(
+        "{} {}",
+        "Suggested commit message:".cyan().bold(),
+        suggested.white()
+    );
+    let confirm = rl.readline(&format!(
+        "{} ",
+        "Commit with this message? [Y/n/e] >".cyan().bold()
+    ))?;
     let confirm = confirm.trim().to_lowercase();
 
     let final_message = match confirm.as_str() {
@@ -1279,7 +1371,10 @@ mod tests {
 
     #[test]
     fn command_arg_extracts_argument() {
-        assert_eq!(command_arg("/commit feat: add git", "/commit"), Some("feat: add git"));
+        assert_eq!(
+            command_arg("/commit feat: add git", "/commit"),
+            Some("feat: add git")
+        );
     }
 
     #[test]

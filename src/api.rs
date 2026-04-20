@@ -121,10 +121,7 @@ impl LLMClient {
         let path = cwd.join(".localcoder/settings.json");
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).with_context(|| {
-                format!(
-                    "failed to create settings directory: {}",
-                    parent.display()
-                )
+                format!("failed to create settings directory: {}", parent.display())
             })?;
         }
 
@@ -397,10 +394,7 @@ impl LLMClient {
 
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).with_context(|| {
-                format!(
-                    "failed to create settings directory: {}",
-                    parent.display()
-                )
+                format!("failed to create settings directory: {}", parent.display())
             })?;
         }
 
@@ -535,7 +529,8 @@ mod tests {
         )
         .unwrap();
 
-        LLMClient::persist_model_to_path(&path, "http://localhost:11434", "deepseek-r1:8b").unwrap();
+        LLMClient::persist_model_to_path(&path, "http://localhost:11434", "deepseek-r1:8b")
+            .unwrap();
 
         let raw = fs::read_to_string(&path).unwrap();
         let settings: PersistedSettings = serde_json::from_str(&raw).unwrap();

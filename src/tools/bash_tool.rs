@@ -10,8 +10,8 @@
  */
 
 use crate::tools::Tool;
-use anyhow::{anyhow, Result};
-use serde_json::{json, Value};
+use anyhow::{Result, anyhow};
+use serde_json::{Value, json};
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Command;
@@ -174,13 +174,17 @@ mod tests {
 
     #[tokio::test]
     async fn bash_blocks_dangerous_command() {
-        let result = BashTool.execute(json!({"command": "rm -rf /tmp/foo && rm -rf /"})).await;
+        let result = BashTool
+            .execute(json!({"command": "rm -rf /tmp/foo && rm -rf /"}))
+            .await;
 
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("blocked dangerous command"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked dangerous command")
+        );
     }
 
     #[tokio::test]

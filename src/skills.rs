@@ -76,7 +76,10 @@ impl ResolvedSkill {
     pub fn default_user_message(&self, args: &str) -> String {
         let args = args.trim();
         if args.is_empty() {
-            format!("Please execute the active skill `{}` for this turn.", self.name)
+            format!(
+                "Please execute the active skill `{}` for this turn.",
+                self.name
+            )
         } else {
             format!("Skill arguments:\n{}", args)
         }
@@ -112,7 +115,11 @@ struct SkillFrontmatter {
     name: Option<String>,
     description: Option<String>,
     when_to_use: Option<String>,
-    #[serde(rename = "allowed-tools", default, deserialize_with = "deserialize_string_list")]
+    #[serde(
+        rename = "allowed-tools",
+        default,
+        deserialize_with = "deserialize_string_list"
+    )]
     allowed_tools: Vec<String>,
     context: Option<String>,
     #[serde(default, deserialize_with = "deserialize_string_list")]
@@ -140,8 +147,10 @@ impl SkillManager {
     }
 
     pub fn set_session_id(&self, session_id: Option<&str>) {
-        self.runtime.lock().expect("skill runtime lock poisoned").session_id =
-            session_id.map(|s| s.to_string());
+        self.runtime
+            .lock()
+            .expect("skill runtime lock poisoned")
+            .session_id = session_id.map(|s| s.to_string());
     }
 
     pub fn clear_active(&self) {
@@ -323,10 +332,18 @@ fn load_skill_registry_with_home(cwd: &Path, home: Option<&Path>) -> Result<Skil
     }
 
     if let Some(home) = home {
-        load_skills_from_dir(&home.join(".localcoder").join("skills"), LoadedFrom::User, &mut skills)?;
+        load_skills_from_dir(
+            &home.join(".localcoder").join("skills"),
+            LoadedFrom::User,
+            &mut skills,
+        )?;
     }
 
-    load_skills_from_dir(&cwd.join(".claude").join("skills"), LoadedFrom::Project, &mut skills)?;
+    load_skills_from_dir(
+        &cwd.join(".claude").join("skills"),
+        LoadedFrom::Project,
+        &mut skills,
+    )?;
     Ok(SkillRegistry { skills })
 }
 
@@ -533,11 +550,7 @@ fn normalize_allowed_tools(raw: &[String]) -> Option<HashSet<String>> {
         .filter(|tool| !tool.is_empty())
         .collect::<HashSet<_>>();
 
-    if set.is_empty() {
-        None
-    } else {
-        Some(set)
-    }
+    if set.is_empty() { None } else { Some(set) }
 }
 
 fn dedup_strings(values: Vec<String>) -> Vec<String> {
@@ -557,7 +570,10 @@ fn dedup_strings(values: Vec<String>) -> Vec<String> {
 }
 
 fn canonical_skill_key(skill_name: &str) -> String {
-    skill_name.trim().trim_start_matches('/').to_ascii_lowercase()
+    skill_name
+        .trim()
+        .trim_start_matches('/')
+        .to_ascii_lowercase()
 }
 
 #[cfg(test)]
@@ -614,7 +630,9 @@ mod tests {
         let manager = SkillManager::new(project.path()).unwrap();
         manager.set_session_id(Some("s123"));
 
-        let resolved = manager.resolve_and_activate("explain", "src/main.rs").unwrap();
+        let resolved = manager
+            .resolve_and_activate("explain", "src/main.rs")
+            .unwrap();
         assert!(resolved.prompt.contains("Session=s123"));
         assert!(resolved.prompt.contains("Args=src/main.rs"));
 

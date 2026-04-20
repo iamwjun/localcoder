@@ -106,7 +106,10 @@ fn default_settings_json() -> Value {
 }
 
 fn resolve_settings_path(project_dir: &Path) -> Result<PathBuf> {
-    resolve_settings_path_with_home(project_dir, std::env::var_os("HOME").as_deref().map(Path::new))
+    resolve_settings_path_with_home(
+        project_dir,
+        std::env::var_os("HOME").as_deref().map(Path::new),
+    )
 }
 
 fn resolve_settings_path_with_home(project_dir: &Path, home: Option<&Path>) -> Result<PathBuf> {
