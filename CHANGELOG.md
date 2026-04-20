@@ -1,6 +1,19 @@
 # Changelog
 
-<!-- last-commit: 842fad0 -->
+<!-- last-commit: b4e6211 -->
+
+## v0.1.7 - 2026-04-20
+
+| Commit | Description |
+|--------|-------------|
+| `b4e6211` | feat: support open api |
+| `3aa8892` | chore: remove unused packages |
+| `09fb0cc` | chore: adjust config file path |
+| `2355f4c` | chore: remove thiserror |
+| `335c2c9` | chore: remove dotenv |
+| `c5845b6` | docs: update README.md |
+| `06e3a4a` | update CHANGELOG.md |
+
 
 ## v0.1.6 - 2026-04-14
 
