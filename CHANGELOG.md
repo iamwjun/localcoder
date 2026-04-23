@@ -1,6 +1,15 @@
 # Changelog
 
-<!-- last-commit: b4e6211 -->
+<!-- last-commit: 15db736 -->
+
+## v0.1.8 - 2026-04-23
+
+| Commit | Description |
+|--------|-------------|
+| `15db736` | fix: LM Studio support sse |
+| `a621cc2` | refactor: optimize llm config file |
+| `4700a6c` | update CHANGELOG.md |
+
 
 ## v0.1.7 - 2026-04-20
 
