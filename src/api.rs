@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::env;
 use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
@@ -89,6 +90,35 @@ struct OpenAIMessage {
 }
 
 #[derive(Debug, Deserialize)]
+struct OpenAIStreamResponse {
+    choices: Vec<OpenAIStreamChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIStreamChoice {
+    delta: OpenAIStreamDelta,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIStreamDelta {
+    content: Option<String>,
+    tool_calls: Option<Vec<OpenAIStreamToolCall>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIStreamToolCall {
+    index: Option<usize>,
+    id: Option<String>,
+    function: Option<OpenAIStreamFunctionCall>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIStreamFunctionCall {
+    name: Option<String>,
+    arguments: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct OpenAIToolCall {
     id: String,
     function: OpenAIFunctionCall,
@@ -96,6 +126,13 @@ struct OpenAIToolCall {
 
 #[derive(Debug, Deserialize)]
 struct OpenAIFunctionCall {
+    name: String,
+    arguments: String,
+}
+
+#[derive(Debug, Default)]
+struct PartialToolCall {
+    id: Option<String>,
     name: String,
     arguments: String,
 }
@@ -427,21 +464,21 @@ impl LLMClient {
             json!({
                 "model": self.model,
                 "messages": openai_messages,
-                "stream": false,
+                "stream": true,
                 "max_tokens": self.max_tokens
             })
         } else {
             json!({
                 "model": self.model,
                 "messages": openai_messages,
-                "stream": false,
+                "stream": true,
                 "tools": tools,
                 "tool_choice": "auto",
                 "max_tokens": self.max_tokens
             })
         };
 
-        let response = self
+        let mut response = self
             .authorized_request(
                 self.client
                     .post(self.chat_completions_url())
@@ -463,36 +500,10 @@ impl LLMClient {
             );
         }
 
-        let response: OpenAIChatResponse = response
-            .json()
+        let (text, tool_uses) = self
+            .read_openai_compatible_stream(&mut response)
             .await
-            .with_context(|| format!("failed to parse {} response", self.provider_name()))?;
-        let choice = response
-            .choices
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow!("{} returned no choices", self.provider_name()))?;
-
-        let text = choice.message.content.unwrap_or_default();
-        if !text.is_empty() {
-            print!("{}", text);
-        }
-
-        let tool_uses = choice
-            .message
-            .tool_calls
-            .unwrap_or_default()
-            .into_iter()
-            .map(|tool_call| {
-                let arguments = serde_json::from_str(&tool_call.function.arguments)
-                    .unwrap_or_else(|_| json!({ "_raw": tool_call.function.arguments }));
-                ToolUseCall {
-                    id: Some(tool_call.id),
-                    name: tool_call.function.name,
-                    arguments,
-                }
-            })
-            .collect::<Vec<_>>();
+            .with_context(|| format!("failed to parse {} stream", self.provider_name()))?;
 
         Ok(build_agent_response(text, tool_uses))
     }
@@ -602,6 +613,36 @@ impl LLMClient {
             .next()
             .ok_or_else(|| anyhow!("{} returned no choices", self.provider_name()))?;
         Ok(choice.message.content.unwrap_or_default())
+    }
+
+    async fn read_openai_compatible_stream(
+        &self,
+        response: &mut reqwest::Response,
+    ) -> Result<(String, Vec<ToolUseCall>)> {
+        let mut text = String::new();
+        let mut partial_tool_calls = Vec::new();
+        let mut buffer = String::new();
+
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .with_context(|| format!("failed to read {} stream chunk", self.provider_name()))?
+        {
+            let chunk = String::from_utf8_lossy(&chunk);
+            buffer.push_str(&chunk);
+
+            while let Some(event) = next_sse_event(&mut buffer) {
+                if handle_openai_stream_event(&event, &mut text, &mut partial_tool_calls)? {
+                    break;
+                }
+            }
+        }
+
+        if !buffer.trim().is_empty() {
+            let _ = handle_openai_stream_event(&buffer, &mut text, &mut partial_tool_calls)?;
+        }
+
+        Ok((text, finalize_partial_tool_calls(partial_tool_calls)))
     }
 
     fn authorized_request(
@@ -805,6 +846,106 @@ fn validate_non_empty(label: &str, value: &str) -> Result<()> {
         return Err(anyhow!("{label} must not be empty"));
     }
     Ok(())
+}
+
+fn next_sse_event(buffer: &mut String) -> Option<String> {
+    let lf = buffer.find("\n\n").map(|idx| (idx, 2));
+    let crlf = buffer.find("\r\n\r\n").map(|idx| (idx, 4));
+    let (idx, sep_len) = match (lf, crlf) {
+        (Some(a), Some(b)) => {
+            if a.0 <= b.0 {
+                a
+            } else {
+                b
+            }
+        }
+        (Some(a), None) => a,
+        (None, Some(b)) => b,
+        (None, None) => return None,
+    };
+
+    let event = buffer[..idx].to_string();
+    buffer.drain(..idx + sep_len);
+    Some(event)
+}
+
+fn handle_openai_stream_event(
+    event: &str,
+    text: &mut String,
+    partial_tool_calls: &mut Vec<PartialToolCall>,
+) -> Result<bool> {
+    let data = event
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .map(str::trim_start)
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if data.is_empty() {
+        return Ok(false);
+    }
+
+    if data.trim() == "[DONE]" {
+        return Ok(true);
+    }
+
+    let response: OpenAIStreamResponse =
+        serde_json::from_str(&data).context("failed to parse stream event JSON")?;
+
+    for choice in response.choices {
+        if let Some(content) = choice.delta.content {
+            if !content.is_empty() {
+                print!("{}", content);
+                flush_stdout()?;
+                text.push_str(&content);
+            }
+        }
+
+        if let Some(tool_calls) = choice.delta.tool_calls {
+            for tool_call in tool_calls {
+                let index = tool_call.index.unwrap_or(partial_tool_calls.len());
+                while partial_tool_calls.len() <= index {
+                    partial_tool_calls.push(PartialToolCall::default());
+                }
+
+                let partial = &mut partial_tool_calls[index];
+                if let Some(id) = tool_call.id {
+                    partial.id = Some(id);
+                }
+
+                if let Some(function) = tool_call.function {
+                    if let Some(name) = function.name {
+                        partial.name.push_str(&name);
+                    }
+                    if let Some(arguments) = function.arguments {
+                        partial.arguments.push_str(&arguments);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(false)
+}
+
+fn finalize_partial_tool_calls(partial_tool_calls: Vec<PartialToolCall>) -> Vec<ToolUseCall> {
+    partial_tool_calls
+        .into_iter()
+        .filter(|partial| !partial.name.trim().is_empty())
+        .map(|partial| {
+            let arguments = serde_json::from_str(&partial.arguments)
+                .unwrap_or_else(|_| json!({ "_raw": partial.arguments }));
+            ToolUseCall {
+                id: partial.id,
+                name: partial.name,
+                arguments,
+            }
+        })
+        .collect()
+}
+
+fn flush_stdout() -> Result<()> {
+    io::stdout().flush().context("failed to flush stdout")
 }
 
 fn parse_provider(value: &str) -> Option<Provider> {
@@ -1319,6 +1460,51 @@ mod tests {
         assert_eq!(settings.llm.base_url, "http://localhost:1234");
         assert_eq!(settings.llm.api_key.as_deref(), Some("token"));
         assert_eq!(settings.llm.model, "qwen3-coder");
+    }
+
+    #[test]
+    fn next_sse_event_extracts_event_blocks() {
+        let mut buffer = "data: {\"a\":1}\n\ndata: {\"b\":2}\n\n".to_string();
+        assert_eq!(next_sse_event(&mut buffer).unwrap(), "data: {\"a\":1}");
+        assert_eq!(next_sse_event(&mut buffer).unwrap(), "data: {\"b\":2}");
+        assert!(next_sse_event(&mut buffer).is_none());
+    }
+
+    #[test]
+    fn handle_openai_stream_event_appends_content() {
+        let event = r#"data: {"choices":[{"delta":{"content":"hello"}}]}"#;
+        let mut text = String::new();
+        let mut partial_tool_calls = Vec::new();
+
+        let done = handle_openai_stream_event(event, &mut text, &mut partial_tool_calls).unwrap();
+        assert!(!done);
+        assert_eq!(text, "hello");
+        assert!(partial_tool_calls.is_empty());
+    }
+
+    #[test]
+    fn handle_openai_stream_event_accumulates_tool_calls() {
+        let mut text = String::new();
+        let mut partial_tool_calls = Vec::new();
+
+        handle_openai_stream_event(
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"Read","arguments":"{\"file_path\":\"src/"}}]}}]}"#,
+            &mut text,
+            &mut partial_tool_calls,
+        )
+        .unwrap();
+        handle_openai_stream_event(
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"main.rs\"}"}}]}}]}"#,
+            &mut text,
+            &mut partial_tool_calls,
+        )
+        .unwrap();
+
+        let tool_calls = finalize_partial_tool_calls(partial_tool_calls);
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].id.as_deref(), Some("call_1"));
+        assert_eq!(tool_calls[0].name, "Read");
+        assert_eq!(tool_calls[0].arguments["file_path"], "src/main.rs");
     }
 
     #[test]
