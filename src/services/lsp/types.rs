@@ -324,7 +324,7 @@ mod tests {
         fs::write(
             dir.join("settings.json"),
             r#"{
-              "ollama": {"url": "http://localhost:11434", "model": "qwen"},
+              "llm": {"type": "ollama", "base_url": "http://localhost:11434", "model": "qwen"},
               "lsp": {
                 "servers": [
                   {
@@ -354,7 +354,7 @@ mod tests {
         fs::write(
             dir.join("settings.json"),
             r#"{
-              "ollama": {"url": "http://localhost:11434", "model": "qwen"},
+              "llm": {"type": "ollama", "base_url": "http://localhost:11434", "model": "qwen"},
               "lsp": {"enabled": false}
             }"#,
         )

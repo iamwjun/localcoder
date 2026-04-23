@@ -98,8 +98,9 @@ fn load_from_path(path: &Path) -> Result<AppConfig> {
 
 fn default_settings_json() -> Value {
     json!({
-        "ollama": {
-            "url": DEFAULT_OLLAMA_URL,
+        "llm": {
+            "type": "ollama",
+            "base_url": DEFAULT_OLLAMA_URL,
             "model": DEFAULT_OLLAMA_MODEL
         }
     })
@@ -165,7 +166,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(
             dir.join("settings.json"),
-            r#"{"ollama":{"url":"http://localhost:11434","model":"qwen"}}"#,
+            r#"{"llm":{"type":"ollama","base_url":"http://localhost:11434","model":"qwen"}}"#,
         )
         .unwrap();
 

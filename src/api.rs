@@ -17,30 +17,26 @@ use std::path::{Path, PathBuf};
 const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
 const DEFAULT_OLLAMA_MODEL: &str = "qwen3.5:4b";
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct LLMSettings {
-    #[serde(default)]
-    ollama: Option<OllamaSettings>,
-    #[serde(default)]
-    openai: Option<OpenAISettings>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct OllamaSettings {
-    url: String,
-    model: String,
+    llm: LLMConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct OpenAISettings {
+struct LLMConfig {
+    #[serde(rename = "type")]
+    provider: Provider,
     base_url: String,
-    api_key: String,
+    #[serde(default)]
+    api_key: Option<String>,
     model: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 enum Provider {
     Ollama,
+    LMStudio,
     OpenAI,
 }
 
@@ -62,6 +58,18 @@ struct OpenAIModelsResponse {
 #[derive(Debug, Deserialize)]
 struct OpenAIModelEntry {
     id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LMStudioModelsResponse {
+    models: Vec<LMStudioModelEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LMStudioModelEntry {
+    key: String,
+    #[serde(rename = "type")]
+    model_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -90,20 +98,6 @@ struct OpenAIToolCall {
 struct OpenAIFunctionCall {
     name: String,
     arguments: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct PersistedSettings {
-    #[serde(default)]
-    ollama: Option<PersistedOllamaSettings>,
-    #[serde(default)]
-    openai: Option<OpenAISettings>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct PersistedOllamaSettings {
-    url: String,
-    model: String,
 }
 
 /// LLM client used by the REPL and agent loop.
@@ -135,27 +129,33 @@ impl LLMClient {
     }
 
     fn from_settings(settings: LLMSettings) -> Self {
-        if let Some(openai) = settings.openai {
-            return Self {
+        let provider = settings.llm.provider;
+
+        match provider {
+            Provider::OpenAI => Self {
                 client: Client::new(),
                 provider: Provider::OpenAI,
-                base_url: openai.base_url.trim_end_matches('/').to_string(),
-                api_key: Some(openai.api_key),
-                model: openai.model,
+                base_url: settings.llm.base_url.trim_end_matches('/').to_string(),
+                api_key: settings.llm.api_key.filter(|key| !key.trim().is_empty()),
+                model: settings.llm.model,
                 max_tokens: 4096,
-            };
-        }
-
-        let ollama = settings
-            .ollama
-            .expect("validated settings must include ollama when openai is absent");
-        Self {
-            client: Client::new(),
-            provider: Provider::Ollama,
-            base_url: ollama.url.trim_end_matches('/').to_string(),
-            api_key: None,
-            model: ollama.model,
-            max_tokens: 4096,
+            },
+            Provider::LMStudio => Self {
+                client: Client::new(),
+                provider: Provider::LMStudio,
+                base_url: normalize_lmstudio_base_url(&settings.llm.base_url),
+                api_key: settings.llm.api_key.filter(|key| !key.trim().is_empty()),
+                model: settings.llm.model,
+                max_tokens: 4096,
+            },
+            Provider::Ollama => Self {
+                client: Client::new(),
+                provider: Provider::Ollama,
+                base_url: settings.llm.base_url.trim_end_matches('/').to_string(),
+                api_key: None,
+                model: settings.llm.model,
+                max_tokens: 4096,
+            },
         }
     }
 
@@ -182,6 +182,7 @@ impl LLMClient {
 
     fn ensure_settings_file_with(home: Option<&Path>) -> Result<PathBuf> {
         if let Ok(path) = Self::resolve_settings_path_with(home) {
+            Self::migrate_settings_file_if_needed(&path)?;
             return Ok(path);
         }
 
@@ -199,33 +200,123 @@ impl LLMClient {
         Ok(path)
     }
 
+    fn migrate_settings_file_if_needed(path: &Path) -> Result<()> {
+        let raw = fs::read_to_string(path)
+            .with_context(|| format!("failed to read settings file: {}", path.display()))?;
+        let mut root: Value = match serde_json::from_str(&raw) {
+            Ok(root) => root,
+            Err(_) => return Ok(()),
+        };
+
+        if !Self::migrate_settings_value(&mut root)? {
+            return Ok(());
+        }
+
+        let migrated =
+            serde_json::to_string_pretty(&root).context("failed to serialize migrated settings")?;
+        fs::write(path, migrated)
+            .with_context(|| format!("failed to write migrated settings: {}", path.display()))?;
+        Ok(())
+    }
+
+    fn migrate_settings_value(root: &mut Value) -> Result<bool> {
+        let Some(root_obj) = root.as_object_mut() else {
+            return Ok(false);
+        };
+
+        if root_obj.get("llm").and_then(Value::as_object).is_some() {
+            let root_provider = root_obj
+                .get("type")
+                .and_then(Value::as_str)
+                .and_then(parse_provider);
+            let mut changed = false;
+            {
+                let llm_obj = root_obj
+                    .get_mut("llm")
+                    .and_then(Value::as_object_mut)
+                    .expect("checked llm object above");
+                let provider = llm_obj
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .and_then(parse_provider)
+                    .or(root_provider)
+                    .or_else(|| {
+                        llm_obj
+                            .get("base_url")
+                            .and_then(Value::as_str)
+                            .map(infer_provider_from_base_url)
+                    })
+                    .unwrap_or(Provider::Ollama);
+
+                let provider_value =
+                    serde_json::to_value(provider).context("failed to serialize provider")?;
+                if llm_obj.get("type") != Some(&provider_value) {
+                    llm_obj.insert("type".to_string(), provider_value);
+                    changed = true;
+                }
+
+                if matches!(provider, Provider::Ollama) && llm_obj.remove("api_key").is_some() {
+                    changed = true;
+                }
+            }
+
+            for key in ["type", "ollama", "lmstudio", "openai"] {
+                if root_obj.remove(key).is_some() {
+                    changed = true;
+                }
+            }
+
+            return Ok(changed);
+        }
+
+        let provider = root_obj
+            .get("type")
+            .and_then(Value::as_str)
+            .and_then(parse_provider)
+            .filter(|provider| legacy_section_exists(root_obj, *provider))
+            .or_else(|| {
+                [Provider::OpenAI, Provider::LMStudio, Provider::Ollama]
+                    .into_iter()
+                    .find(|provider| legacy_section_exists(root_obj, *provider))
+            });
+
+        let Some(provider) = provider else {
+            return Ok(false);
+        };
+
+        let Some(llm) = build_llm_from_legacy(root_obj, provider) else {
+            return Ok(false);
+        };
+
+        root_obj.insert(
+            "llm".to_string(),
+            serde_json::to_value(llm).context("failed to serialize llm config")?,
+        );
+
+        for key in ["type", "ollama", "lmstudio", "openai"] {
+            root_obj.remove(key);
+        }
+
+        Ok(true)
+    }
+
     fn load_settings_from_path(path: &Path) -> Result<LLMSettings> {
         let raw = fs::read_to_string(path)
             .with_context(|| format!("failed to read settings file: {}", path.display()))?;
         let settings: LLMSettings = serde_json::from_str(&raw)
             .with_context(|| format!("invalid settings JSON: {}", path.display()))?;
-
-        if let Some(openai) = settings.openai.as_ref() {
-            validate_non_empty("settings.openai.base_url", &openai.base_url)?;
-            validate_non_empty("settings.openai.api_key", &openai.api_key)?;
-            validate_non_empty("settings.openai.model", &openai.model)?;
-            return Ok(settings);
-        }
-
-        let ollama = settings
-            .ollama
-            .as_ref()
-            .ok_or_else(|| anyhow!("settings must include either openai or ollama"))?;
-        validate_non_empty("settings.ollama.url", &ollama.url)?;
-        validate_non_empty("settings.ollama.model", &ollama.model)?;
+        let _provider = settings.llm.provider;
+        validate_non_empty("settings.llm.base_url", &settings.llm.base_url)?;
+        validate_non_empty("settings.llm.model", &settings.llm.model)?;
 
         Ok(settings)
     }
 
     fn default_settings_json() -> String {
         serde_json::to_string_pretty(&json!({
-            "ollama": {
-                "url": DEFAULT_OLLAMA_URL,
+            "llm": {
+                "type": "ollama",
+                "base_url": DEFAULT_OLLAMA_URL,
                 "model": DEFAULT_OLLAMA_MODEL
             }
         }))
@@ -235,6 +326,7 @@ impl LLMClient {
     pub fn provider_name(&self) -> &'static str {
         match self.provider {
             Provider::Ollama => "Ollama",
+            Provider::LMStudio => "LM Studio",
             Provider::OpenAI => "OpenAI",
         }
     }
@@ -247,7 +339,10 @@ impl LLMClient {
     ) -> Result<AgentResponse> {
         match self.provider {
             Provider::Ollama => self.call_with_tools_ollama(messages, tools).await,
-            Provider::OpenAI => self.call_with_tools_openai(messages, tools).await,
+            Provider::LMStudio | Provider::OpenAI => {
+                self.call_with_tools_openai_compatible(messages, tools)
+                    .await
+            }
         }
     }
 
@@ -317,7 +412,7 @@ impl LLMClient {
         Ok(build_agent_response(text, tool_uses))
     }
 
-    async fn call_with_tools_openai(
+    async fn call_with_tools_openai_compatible(
         &self,
         messages: &[Value],
         tools: &[Value],
@@ -349,29 +444,34 @@ impl LLMClient {
         let response = self
             .authorized_request(
                 self.client
-                    .post(format!("{}/chat/completions", self.base_url))
+                    .post(self.chat_completions_url())
                     .header("content-type", "application/json"),
             )?
             .json(&body)
             .send()
             .await
-            .context("OpenAI request failed")?;
+            .with_context(|| format!("{} request failed", self.provider_name()))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            anyhow::bail!("OpenAI returned error {}: {}", status, error_text);
+            anyhow::bail!(
+                "{} returned error {}: {}",
+                self.provider_name(),
+                status,
+                error_text
+            );
         }
 
         let response: OpenAIChatResponse = response
             .json()
             .await
-            .context("failed to parse OpenAI response")?;
+            .with_context(|| format!("failed to parse {} response", self.provider_name()))?;
         let choice = response
             .choices
             .into_iter()
             .next()
-            .ok_or_else(|| anyhow!("OpenAI returned no choices"))?;
+            .ok_or_else(|| anyhow!("{} returned no choices", self.provider_name()))?;
 
         let text = choice.message.content.unwrap_or_default();
         if !text.is_empty() {
@@ -408,7 +508,10 @@ impl LLMClient {
     pub async fn complete_prompt(&self, prompt: &str, max_tokens: u32) -> Result<String> {
         match self.provider {
             Provider::Ollama => self.complete_prompt_ollama(prompt, max_tokens).await,
-            Provider::OpenAI => self.complete_prompt_openai(prompt, max_tokens).await,
+            Provider::LMStudio | Provider::OpenAI => {
+                self.complete_prompt_openai_compatible(prompt, max_tokens)
+                    .await
+            }
         }
     }
 
@@ -450,7 +553,11 @@ impl LLMClient {
         Ok(response.message.content.unwrap_or_default())
     }
 
-    async fn complete_prompt_openai(&self, prompt: &str, max_tokens: u32) -> Result<String> {
+    async fn complete_prompt_openai_compatible(
+        &self,
+        prompt: &str,
+        max_tokens: u32,
+    ) -> Result<String> {
         let body = json!({
             "model": self.model,
             "messages": [
@@ -466,29 +573,34 @@ impl LLMClient {
         let response = self
             .authorized_request(
                 self.client
-                    .post(format!("{}/chat/completions", self.base_url))
+                    .post(self.chat_completions_url())
                     .header("content-type", "application/json"),
             )?
             .json(&body)
             .send()
             .await
-            .context("OpenAI prompt request failed")?;
+            .with_context(|| format!("{} prompt request failed", self.provider_name()))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            anyhow::bail!("OpenAI returned error {}: {}", status, error_text);
+            anyhow::bail!(
+                "{} returned error {}: {}",
+                self.provider_name(),
+                status,
+                error_text
+            );
         }
 
         let response: OpenAIChatResponse = response
             .json()
             .await
-            .context("failed to parse OpenAI prompt response")?;
+            .with_context(|| format!("failed to parse {} prompt response", self.provider_name()))?;
         let choice = response
             .choices
             .into_iter()
             .next()
-            .ok_or_else(|| anyhow!("OpenAI returned no choices"))?;
+            .ok_or_else(|| anyhow!("{} returned no choices", self.provider_name()))?;
         Ok(choice.message.content.unwrap_or_default())
     }
 
@@ -498,6 +610,10 @@ impl LLMClient {
     ) -> Result<reqwest::RequestBuilder> {
         match self.provider {
             Provider::Ollama => Ok(request),
+            Provider::LMStudio => match self.api_key.as_deref() {
+                Some(api_key) => Ok(request.bearer_auth(api_key)),
+                None => Ok(request),
+            },
             Provider::OpenAI => {
                 let api_key = self
                     .api_key
@@ -526,9 +642,17 @@ impl LLMClient {
         &self.base_url
     }
 
+    fn chat_completions_url(&self) -> String {
+        match self.provider {
+            Provider::LMStudio => format!("{}/v1/chat/completions", self.base_url),
+            Provider::Ollama | Provider::OpenAI => format!("{}/chat/completions", self.base_url),
+        }
+    }
+
     pub async fn list_models(&self) -> Result<Vec<String>> {
         match self.provider {
             Provider::Ollama => self.list_models_ollama().await,
+            Provider::LMStudio => self.list_models_lmstudio().await,
             Provider::OpenAI => self.list_models_openai().await,
         }
     }
@@ -590,6 +714,35 @@ impl LLMClient {
         Ok(models)
     }
 
+    async fn list_models_lmstudio(&self) -> Result<Vec<String>> {
+        let response = self
+            .authorized_request(self.client.get(format!("{}/api/v1/models", self.base_url)))?
+            .send()
+            .await
+            .context("failed to fetch LM Studio models")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            anyhow::bail!("LM Studio returned error {}: {}", status, error_text);
+        }
+
+        let response: LMStudioModelsResponse = response
+            .json()
+            .await
+            .context("failed to parse LM Studio models response")?;
+
+        let mut models = response
+            .models
+            .into_iter()
+            .filter(|model| model.model_type.as_deref() != Some("embedding"))
+            .map(|model| model.key)
+            .collect::<Vec<_>>();
+        models.sort();
+        models.dedup();
+        Ok(models)
+    }
+
     pub fn persist_model_to_home(&self, model: &str) -> Result<PathBuf> {
         let home_path = Self::home_settings_path()?;
         Self::persist_model_to_path(&home_path, self.provider, &self.base_url, model)?;
@@ -610,50 +763,24 @@ impl LLMClient {
         let settings = if path.exists() {
             let raw = fs::read_to_string(path)
                 .with_context(|| format!("failed to read settings file: {}", path.display()))?;
-            let mut settings: PersistedSettings = serde_json::from_str(&raw)
+            let mut settings: LLMSettings = serde_json::from_str(&raw)
                 .with_context(|| format!("invalid settings JSON: {}", path.display()))?;
-
-            match provider {
-                Provider::Ollama => {
-                    let ollama = settings.ollama.get_or_insert(PersistedOllamaSettings {
-                        url: base_url.to_string(),
-                        model: model.to_string(),
-                    });
-                    if ollama.url.trim().is_empty() {
-                        ollama.url = base_url.to_string();
-                    }
-                    ollama.model = model.to_string();
-                }
-                Provider::OpenAI => {
-                    let openai = settings.openai.get_or_insert(OpenAISettings {
-                        base_url: base_url.to_string(),
-                        api_key: String::new(),
-                        model: model.to_string(),
-                    });
-                    if openai.base_url.trim().is_empty() {
-                        openai.base_url = base_url.to_string();
-                    }
-                    openai.model = model.to_string();
-                }
+            if settings.llm.base_url.trim().is_empty() {
+                settings.llm.base_url = base_url.to_string();
             }
-
+            settings.llm.provider = provider;
+            if matches!(provider, Provider::Ollama) {
+                settings.llm.api_key = None;
+            }
+            settings.llm.model = model.to_string();
             settings
         } else {
-            match provider {
-                Provider::Ollama => PersistedSettings {
-                    ollama: Some(PersistedOllamaSettings {
-                        url: base_url.to_string(),
-                        model: model.to_string(),
-                    }),
-                    openai: None,
-                },
-                Provider::OpenAI => PersistedSettings {
-                    ollama: None,
-                    openai: Some(OpenAISettings {
-                        base_url: base_url.to_string(),
-                        api_key: String::new(),
-                        model: model.to_string(),
-                    }),
+            LLMSettings {
+                llm: LLMConfig {
+                    provider,
+                    base_url: base_url.to_string(),
+                    api_key: None,
+                    model: model.to_string(),
                 },
             }
         };
@@ -678,6 +805,100 @@ fn validate_non_empty(label: &str, value: &str) -> Result<()> {
         return Err(anyhow!("{label} must not be empty"));
     }
     Ok(())
+}
+
+fn parse_provider(value: &str) -> Option<Provider> {
+    match value {
+        "ollama" => Some(Provider::Ollama),
+        "lmstudio" => Some(Provider::LMStudio),
+        "openai" => Some(Provider::OpenAI),
+        _ => None,
+    }
+}
+
+fn legacy_section_exists(root: &serde_json::Map<String, Value>, provider: Provider) -> bool {
+    let key = match provider {
+        Provider::Ollama => "ollama",
+        Provider::LMStudio => "lmstudio",
+        Provider::OpenAI => "openai",
+    };
+    root.get(key).and_then(Value::as_object).is_some()
+}
+
+fn build_llm_from_legacy(
+    root: &serde_json::Map<String, Value>,
+    provider: Provider,
+) -> Option<LLMConfig> {
+    let key = match provider {
+        Provider::Ollama => "ollama",
+        Provider::LMStudio => "lmstudio",
+        Provider::OpenAI => "openai",
+    };
+    let section = root.get(key)?.as_object()?;
+    let base_url = section
+        .get("base_url")
+        .or_else(|| section.get("url"))
+        .and_then(Value::as_str)?
+        .trim()
+        .to_string();
+    let model = section
+        .get("model")
+        .and_then(Value::as_str)?
+        .trim()
+        .to_string();
+    if base_url.is_empty() || model.is_empty() {
+        return None;
+    }
+
+    let api_key = match provider {
+        Provider::Ollama => None,
+        Provider::LMStudio | Provider::OpenAI => section
+            .get("api_key")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .map(ToOwned::to_owned),
+    };
+
+    Some(LLMConfig {
+        provider,
+        base_url,
+        api_key,
+        model,
+    })
+}
+
+fn infer_provider_from_base_url(base_url: &str) -> Provider {
+    let normalized = normalize_lmstudio_base_url(base_url);
+
+    if let Ok(url) = reqwest::Url::parse(&normalized) {
+        match url.port_or_known_default() {
+            Some(11434) => return Provider::Ollama,
+            Some(1234) => return Provider::LMStudio,
+            _ => {}
+        }
+    }
+
+    if normalized.contains("11434") || normalized.contains("ollama") {
+        Provider::Ollama
+    } else if normalized.contains("1234") || normalized.contains("lmstudio") {
+        Provider::LMStudio
+    } else {
+        Provider::OpenAI
+    }
+}
+
+fn normalize_lmstudio_base_url(base_url: &str) -> String {
+    let mut normalized = base_url.trim().trim_end_matches('/').to_string();
+
+    for suffix in ["/v1", "/api/v1", "/api/v0"] {
+        if normalized.ends_with(suffix) {
+            normalized.truncate(normalized.len() - suffix.len());
+            break;
+        }
+    }
+
+    normalized
 }
 
 fn build_agent_response(text: String, tool_uses: Vec<ToolUseCall>) -> AgentResponse {
@@ -789,9 +1010,10 @@ mod tests {
         assert_eq!(path, home.path().join(".localcoder/settings.json"));
 
         let settings = LLMClient::load_settings_from_path(&path).unwrap();
-        let ollama = settings.ollama.unwrap();
-        assert_eq!(ollama.url, DEFAULT_OLLAMA_URL);
-        assert_eq!(ollama.model, DEFAULT_OLLAMA_MODEL);
+        assert_eq!(settings.llm.provider, Provider::Ollama);
+        assert_eq!(settings.llm.base_url, DEFAULT_OLLAMA_URL);
+        assert_eq!(settings.llm.model, DEFAULT_OLLAMA_MODEL);
+        assert_eq!(settings.llm.api_key, None);
     }
 
     #[test]
@@ -802,13 +1024,86 @@ mod tests {
         fs::create_dir_all(home_settings.parent().unwrap()).unwrap();
         fs::write(
             &home_settings,
-            r#"{"ollama":{"url":"http://remote-host:11434","model":"qwen2.5-coder:7b"}}"#,
+            r#"{"llm":{"type":"ollama","base_url":"http://remote-host:11434","model":"qwen2.5-coder:7b"}}"#,
         )
         .unwrap();
 
         let path = LLMClient::ensure_settings_file_with(Some(home.path())).unwrap();
 
         assert_eq!(path, home_settings);
+    }
+
+    #[test]
+    fn ensure_settings_file_with_migrates_legacy_ollama_settings() {
+        let home = tempdir().unwrap();
+        let home_settings = home.path().join(".localcoder/settings.json");
+        fs::create_dir_all(home_settings.parent().unwrap()).unwrap();
+        fs::write(
+            &home_settings,
+            r#"{
+                "ollama":{"url":"http://localhost:11434","model":"qwen2.5-coder:7b"},
+                "ui":{"theme":"dark"}
+            }"#,
+        )
+        .unwrap();
+
+        LLMClient::ensure_settings_file_with(Some(home.path())).unwrap();
+
+        let raw = fs::read_to_string(&home_settings).unwrap();
+        let root: Value = serde_json::from_str(&raw).unwrap();
+        assert!(root.get("ollama").is_none());
+        assert_eq!(root["llm"]["type"], "ollama");
+        assert_eq!(root["llm"]["base_url"], "http://localhost:11434");
+        assert_eq!(root["llm"]["model"], "qwen2.5-coder:7b");
+        assert_eq!(root["ui"]["theme"], "dark");
+    }
+
+    #[test]
+    fn ensure_settings_file_with_migrates_legacy_openai_settings() {
+        let home = tempdir().unwrap();
+        let home_settings = home.path().join(".localcoder/settings.json");
+        fs::create_dir_all(home_settings.parent().unwrap()).unwrap();
+        fs::write(
+            &home_settings,
+            r#"{
+                "openai":{"base_url":"https://api.openai.com/v1","api_key":"sk-test","model":"gpt-4o-mini"},
+                "lsp":{"enabled":false}
+            }"#,
+        )
+        .unwrap();
+
+        LLMClient::ensure_settings_file_with(Some(home.path())).unwrap();
+
+        let raw = fs::read_to_string(&home_settings).unwrap();
+        let root: Value = serde_json::from_str(&raw).unwrap();
+        assert!(root.get("openai").is_none());
+        assert_eq!(root["llm"]["type"], "openai");
+        assert_eq!(root["llm"]["base_url"], "https://api.openai.com/v1");
+        assert_eq!(root["llm"]["api_key"], "sk-test");
+        assert_eq!(root["llm"]["model"], "gpt-4o-mini");
+        assert_eq!(root["lsp"]["enabled"], false);
+    }
+
+    #[test]
+    fn ensure_settings_file_with_adds_type_to_llm_when_missing() {
+        let home = tempdir().unwrap();
+        let home_settings = home.path().join(".localcoder/settings.json");
+        fs::create_dir_all(home_settings.parent().unwrap()).unwrap();
+        fs::write(
+            &home_settings,
+            r#"{
+                "llm":{"base_url":"http://localhost:1234","model":"deepseek-r1"},
+                "type":"lmstudio"
+            }"#,
+        )
+        .unwrap();
+
+        LLMClient::ensure_settings_file_with(Some(home.path())).unwrap();
+
+        let raw = fs::read_to_string(&home_settings).unwrap();
+        let root: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(root["llm"]["type"], "lmstudio");
+        assert!(root.get("type").is_none());
     }
 
     #[test]
@@ -823,43 +1118,70 @@ mod tests {
         let path = temp.path().join("setting.json");
         fs::write(
             &path,
-            r#"{"ollama":{"url":"http://localhost:11434","model":"qwen2.5-coder:7b"}}"#,
+            r#"{"llm":{"type":"ollama","base_url":"http://localhost:11434","model":"qwen2.5-coder:7b"}}"#,
         )
         .unwrap();
 
         let settings = LLMClient::load_settings_from_path(&path).unwrap();
-        let ollama = settings.ollama.unwrap();
-        assert_eq!(ollama.url, "http://localhost:11434");
-        assert_eq!(ollama.model, "qwen2.5-coder:7b");
+        assert_eq!(settings.llm.provider, Provider::Ollama);
+        assert_eq!(settings.llm.base_url, "http://localhost:11434");
+        assert_eq!(settings.llm.model, "qwen2.5-coder:7b");
     }
 
     #[test]
-    fn load_settings_from_path_prefers_openai_when_present() {
+    fn load_settings_from_path_reads_openai_values() {
         let temp = tempdir().unwrap();
         let path = temp.path().join("setting.json");
         fs::write(
             &path,
-            r#"{
-                "ollama":{"url":"http://localhost:11434","model":"qwen2.5-coder:7b"},
-                "openai":{"base_url":"https://api.openai.com/v1","api_key":"sk-test","model":"gpt-4o-mini"}
-            }"#,
+            r#"{"llm":{"type":"openai","base_url":"https://api.openai.com/v1","api_key":"sk-test","model":"gpt-4o-mini"}}"#,
         )
         .unwrap();
 
         let settings = LLMClient::load_settings_from_path(&path).unwrap();
-        let openai = settings.openai.unwrap();
-        assert_eq!(openai.base_url, "https://api.openai.com/v1");
-        assert_eq!(openai.model, "gpt-4o-mini");
+        assert_eq!(settings.llm.provider, Provider::OpenAI);
+        assert_eq!(settings.llm.base_url, "https://api.openai.com/v1");
+        assert_eq!(settings.llm.api_key.as_deref(), Some("sk-test"));
+        assert_eq!(settings.llm.model, "gpt-4o-mini");
+    }
+
+    #[test]
+    fn load_settings_from_path_requires_llm() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("setting.json");
+        fs::write(
+            &path,
+            r#"{"openai":{"base_url":"https://api.openai.com/v1"}}"#,
+        )
+        .unwrap();
+
+        let err = LLMClient::load_settings_from_path(&path).unwrap_err();
+        assert!(err.to_string().contains("invalid settings JSON"));
+    }
+
+    #[test]
+    fn load_settings_from_path_requires_llm_type() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("setting.json");
+        fs::write(
+            &path,
+            r#"{"llm":{"base_url":"http://localhost:11434","model":"qwen2.5-coder:7b"}}"#,
+        )
+        .unwrap();
+
+        let err = LLMClient::load_settings_from_path(&path).unwrap_err();
+        assert!(err.to_string().contains("invalid settings JSON"));
     }
 
     #[test]
     fn from_settings_sets_ollama_defaults() {
         let client = LLMClient::from_settings(LLMSettings {
-            ollama: Some(OllamaSettings {
-                url: "http://localhost:11434/".to_string(),
+            llm: LLMConfig {
+                provider: Provider::Ollama,
+                base_url: "http://localhost:11434/".to_string(),
+                api_key: Some("ignored".to_string()),
                 model: "qwen2.5-coder:7b".to_string(),
-            }),
-            openai: None,
+            },
         });
 
         assert_eq!(client.provider, Provider::Ollama);
@@ -869,17 +1191,34 @@ mod tests {
     }
 
     #[test]
-    fn from_settings_prefers_openai() {
+    fn from_settings_detects_lmstudio() {
         let client = LLMClient::from_settings(LLMSettings {
-            ollama: Some(OllamaSettings {
-                url: "http://localhost:11434".to_string(),
-                model: "qwen2.5-coder:7b".to_string(),
-            }),
-            openai: Some(OpenAISettings {
+            llm: LLMConfig {
+                provider: Provider::LMStudio,
+                base_url: "http://localhost:1234/".to_string(),
+                api_key: None,
+                model: "deepseek-r1".to_string(),
+            },
+        });
+
+        assert_eq!(client.provider, Provider::LMStudio);
+        assert_eq!(client.base_url(), "http://localhost:1234");
+        assert_eq!(client.model(), "deepseek-r1");
+        assert_eq!(
+            client.chat_completions_url(),
+            "http://localhost:1234/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn from_settings_detects_openai() {
+        let client = LLMClient::from_settings(LLMSettings {
+            llm: LLMConfig {
+                provider: Provider::OpenAI,
                 base_url: "https://api.openai.com/v1/".to_string(),
-                api_key: "sk-test".to_string(),
+                api_key: Some("sk-test".to_string()),
                 model: "gpt-4o-mini".to_string(),
-            }),
+            },
         });
 
         assert_eq!(client.provider, Provider::OpenAI);
@@ -888,13 +1227,32 @@ mod tests {
     }
 
     #[test]
+    fn from_settings_normalizes_lmstudio_v1_base_url() {
+        let client = LLMClient::from_settings(LLMSettings {
+            llm: LLMConfig {
+                provider: Provider::LMStudio,
+                base_url: "http://localhost:1234/v1/".to_string(),
+                api_key: None,
+                model: "deepseek-r1".to_string(),
+            },
+        });
+
+        assert_eq!(client.base_url(), "http://localhost:1234");
+        assert_eq!(
+            client.chat_completions_url(),
+            "http://localhost:1234/v1/chat/completions"
+        );
+    }
+
+    #[test]
     fn set_model_updates_model() {
         let mut client = LLMClient::from_settings(LLMSettings {
-            ollama: Some(OllamaSettings {
-                url: "http://localhost:11434".to_string(),
+            llm: LLMConfig {
+                provider: Provider::Ollama,
+                base_url: "http://localhost:11434".to_string(),
+                api_key: None,
                 model: "qwen2.5-coder:7b".to_string(),
-            }),
-            openai: None,
+            },
         });
 
         client.set_model("llama3.2".to_string());
@@ -904,11 +1262,12 @@ mod tests {
     #[test]
     fn set_max_tokens_updates_value() {
         let mut client = LLMClient::from_settings(LLMSettings {
-            ollama: Some(OllamaSettings {
-                url: "http://localhost:11434".to_string(),
+            llm: LLMConfig {
+                provider: Provider::Ollama,
+                base_url: "http://localhost:11434".to_string(),
+                api_key: None,
                 model: "qwen2.5-coder:7b".to_string(),
-            }),
-            openai: None,
+            },
         });
 
         client.set_max_tokens(2048);
@@ -916,7 +1275,7 @@ mod tests {
     }
 
     #[test]
-    fn persist_model_to_path_creates_ollama_settings() {
+    fn persist_model_to_path_creates_llm_settings() {
         let temp = tempdir().unwrap();
         let path = temp.path().join(".localcoder/settings.json");
 
@@ -929,37 +1288,37 @@ mod tests {
         .unwrap();
 
         let raw = fs::read_to_string(&path).unwrap();
-        let settings: PersistedSettings = serde_json::from_str(&raw).unwrap();
-        let ollama = settings.ollama.unwrap();
-        assert_eq!(ollama.url, "http://localhost:11434");
-        assert_eq!(ollama.model, "llama3.2");
+        let settings: LLMSettings = serde_json::from_str(&raw).unwrap();
+        assert_eq!(settings.llm.provider, Provider::Ollama);
+        assert_eq!(settings.llm.base_url, "http://localhost:11434");
+        assert_eq!(settings.llm.model, "llama3.2");
     }
 
     #[test]
-    fn persist_model_to_path_updates_openai_model() {
+    fn persist_model_to_path_updates_existing_llm_model() {
         let temp = tempdir().unwrap();
         let path = temp.path().join(".localcoder/settings.json");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(
             &path,
-            r#"{"openai":{"base_url":"https://api.openai.com/v1","api_key":"sk-test","model":"gpt-4o-mini"}}"#,
+            r#"{"llm":{"type":"lmstudio","base_url":"http://localhost:1234","api_key":"token","model":"deepseek-r1"}}"#,
         )
         .unwrap();
 
         LLMClient::persist_model_to_path(
             &path,
-            Provider::OpenAI,
-            "https://api.openai.com/v1",
-            "gpt-4.1-mini",
+            Provider::LMStudio,
+            "http://localhost:1234",
+            "qwen3-coder",
         )
         .unwrap();
 
         let raw = fs::read_to_string(&path).unwrap();
-        let settings: PersistedSettings = serde_json::from_str(&raw).unwrap();
-        let openai = settings.openai.unwrap();
-        assert_eq!(openai.base_url, "https://api.openai.com/v1");
-        assert_eq!(openai.api_key, "sk-test");
-        assert_eq!(openai.model, "gpt-4.1-mini");
+        let settings: LLMSettings = serde_json::from_str(&raw).unwrap();
+        assert_eq!(settings.llm.provider, Provider::LMStudio);
+        assert_eq!(settings.llm.base_url, "http://localhost:1234");
+        assert_eq!(settings.llm.api_key.as_deref(), Some("token"));
+        assert_eq!(settings.llm.model, "qwen3-coder");
     }
 
     #[test]

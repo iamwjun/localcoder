@@ -23,15 +23,15 @@ S06 提供用户级可配置能力，先落地两项最常用 UI 配置：
 
 配置复用现有设置文件：
 
-- 优先：`./.localcoder/settings.json`
-- 其次：`$HOME/.localcoder/settings.json`
+- `$HOME/.localcoder/settings.json`
 
 在根对象新增 `ui` 字段：
 
 ```json
 {
-  "ollama": {
-    "url": "http://localhost:11434",
+  "llm": {
+    "type": "ollama",
+    "base_url": "http://localhost:11434",
     "model": "qwen3.5:4b"
   },
   "ui": {

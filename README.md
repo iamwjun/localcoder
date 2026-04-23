@@ -99,22 +99,32 @@ The default config format is:
 
 ```json
 {
-  "ollama": {
-    "url": "http://localhost:11434",
+  "llm": {
+    "type": "ollama",
+    "base_url": "http://localhost:11434",
     "model": "qwen3.5:4b"
   }
 }
 ```
 
-If you want to use OpenAI, add an `openai` section. When `openai` is present, Localcoder will prefer it over `ollama`.
+`llm.type` selects the provider: `ollama`, `lmstudio`, or `openai`.
 
 ```json
 {
-  "ollama": {
-    "url": "http://localhost:11434",
-    "model": "qwen3.5:4b"
-  },
-  "openai": {
+  "llm": {
+    "type": "lmstudio",
+    "base_url": "http://localhost:1234",
+    "model": "qwen/qwen3-coder-30b"
+  }
+}
+```
+
+For OpenAI-compatible services:
+
+```json
+{
+  "llm": {
+    "type": "openai",
     "base_url": "https://api.openai.com/v1",
     "api_key": "sk-...",
     "model": "gpt-4o-mini"
