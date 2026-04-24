@@ -213,7 +213,10 @@ async fn one_shot(
     )
     .await
     {
-        Ok(_) => {
+        Ok(response) => {
+            if engine::response_needs_trailing_newline(&response) {
+                println!();
+            }
             let saved = memory_store.extract_and_save(&client, &messages).await?;
             if !saved.is_empty() {
                 println!(

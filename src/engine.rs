@@ -45,7 +45,12 @@ pub async fn run_agent_loop_with_system_prompt(
     system_prompt: Option<&str>,
 ) -> Result<String> {
     let result = async {
+        let mut needs_followup_newline = false;
         loop {
+            if needs_followup_newline {
+                println!();
+            }
+
             // ── 1. Call the model ─────────────────────────────────────────
             let request_messages = build_request_messages(registry, messages, system_prompt);
             let tools = registry.get_schemas();
@@ -60,7 +65,7 @@ pub async fn run_agent_loop_with_system_prompt(
             }
 
             // ── 4. Execute tool calls and collect results ─────────────────
-            println!();
+            print!("{}", response_section_break(&response.text));
             let mut tool_results: Vec<Value> = Vec::new();
 
             for call in prioritize_tool_calls(&response.tool_uses) {
@@ -86,12 +91,25 @@ pub async fn run_agent_loop_with_system_prompt(
 
             // ── 5. Append tool results and loop ───────────────────────────
             messages.extend(tool_results);
+            needs_followup_newline = true;
         }
     }
     .await;
 
     registry.clear_active_skill();
     result
+}
+
+pub fn response_needs_trailing_newline(response: &str) -> bool {
+    response.is_empty() || !response.ends_with('\n')
+}
+
+fn response_section_break(response: &str) -> &'static str {
+    if response.is_empty() || response.ends_with('\n') {
+        "\n"
+    } else {
+        "\n\n"
+    }
 }
 
 fn prioritize_tool_calls(calls: &[ToolUseCall]) -> Vec<ToolUseCall> {
@@ -282,5 +300,35 @@ mod tests {
         assert_eq!(ordered[0].name, "EnterPlanMode");
         assert_eq!(ordered[1].name, "skill_tool");
         assert_eq!(ordered[2].name, "Edit");
+    }
+
+    #[test]
+    fn response_needs_trailing_newline_for_empty_text() {
+        assert!(response_needs_trailing_newline(""));
+    }
+
+    #[test]
+    fn response_needs_trailing_newline_for_text_without_newline() {
+        assert!(response_needs_trailing_newline("hello"));
+    }
+
+    #[test]
+    fn response_needs_trailing_newline_rejects_text_with_newline() {
+        assert!(!response_needs_trailing_newline("hello\n"));
+    }
+
+    #[test]
+    fn response_section_break_for_empty_text_is_single_newline() {
+        assert_eq!(response_section_break(""), "\n");
+    }
+
+    #[test]
+    fn response_section_break_for_text_without_newline_is_double_newline() {
+        assert_eq!(response_section_break("hello"), "\n\n");
+    }
+
+    #[test]
+    fn response_section_break_for_text_with_newline_is_single_newline() {
+        assert_eq!(response_section_break("hello\n"), "\n");
     }
 }

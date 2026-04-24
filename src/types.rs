@@ -57,6 +57,7 @@ pub struct AgentResponse {
 /// Native Ollama chat response.
 #[derive(Debug, Deserialize)]
 pub struct OllamaChatResponse {
+    pub done: Option<bool>,
     pub message: OllamaMessage,
 }
 

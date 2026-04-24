@@ -601,6 +601,9 @@ async fn run_user_turn(
         .await
         {
             Ok(response) => {
+                if engine::response_needs_trailing_newline(&response) {
+                    println!();
+                }
                 if let Some(s) = session {
                     s.append_messages(&messages[before_len..])?;
                 }
@@ -608,7 +611,7 @@ async fn run_user_turn(
                 let saved_memories = memory_store.extract_and_save(client, messages).await?;
                 if !saved_memories.is_empty() {
                     println!(
-                        "\n{} {}",
+                        "{} {}",
                         "🧠 Saved memories:".cyan().bold(),
                         saved_memories
                             .iter()
@@ -616,9 +619,6 @@ async fn run_user_turn(
                             .collect::<Vec<_>>()
                             .join(", ")
                     );
-                }
-                if response.is_empty() {
-                    println!();
                 }
                 Ok(())
             }

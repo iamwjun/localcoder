@@ -392,7 +392,7 @@ impl LLMClient {
             json!({
                 "model": self.model,
                 "messages": messages,
-                "stream": false,
+                "stream": true,
                 "options": {
                     "num_predict": self.max_tokens
                 }
@@ -401,7 +401,7 @@ impl LLMClient {
             json!({
                 "model": self.model,
                 "messages": messages,
-                "stream": false,
+                "stream": true,
                 "tools": tools,
                 "options": {
                     "num_predict": self.max_tokens
@@ -409,7 +409,7 @@ impl LLMClient {
             })
         };
 
-        let response = self
+        let mut response = self
             .client
             .post(format!("{}/api/chat", self.base_url))
             .header("content-type", "application/json")
@@ -424,27 +424,10 @@ impl LLMClient {
             anyhow::bail!("Ollama returned error {}: {}", status, error_text);
         }
 
-        let response: OllamaChatResponse = response
-            .json()
+        let (text, tool_uses) = self
+            .read_ollama_stream(&mut response)
             .await
-            .context("failed to parse Ollama response")?;
-
-        let text = response.message.content.unwrap_or_default();
-        if !text.is_empty() {
-            print!("{}", text);
-        }
-
-        let tool_uses = response
-            .message
-            .tool_calls
-            .unwrap_or_default()
-            .into_iter()
-            .map(|tool_call| ToolUseCall {
-                id: None,
-                name: tool_call.function.name,
-                arguments: tool_call.function.arguments,
-            })
-            .collect::<Vec<_>>();
+            .context("failed to parse Ollama stream")?;
 
         Ok(build_agent_response(text, tool_uses))
     }
@@ -622,27 +605,63 @@ impl LLMClient {
         let mut text = String::new();
         let mut partial_tool_calls = Vec::new();
         let mut buffer = String::new();
+        let mut stream_finished = false;
 
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .with_context(|| format!("failed to read {} stream chunk", self.provider_name()))?
+        while !stream_finished
+            && let Some(chunk) = response
+                .chunk()
+                .await
+                .with_context(|| format!("failed to read {} stream chunk", self.provider_name()))?
         {
             let chunk = String::from_utf8_lossy(&chunk);
             buffer.push_str(&chunk);
 
             while let Some(event) = next_sse_event(&mut buffer) {
                 if handle_openai_stream_event(&event, &mut text, &mut partial_tool_calls)? {
+                    stream_finished = true;
                     break;
                 }
             }
         }
 
-        if !buffer.trim().is_empty() {
+        if !stream_finished && !buffer.trim().is_empty() {
             let _ = handle_openai_stream_event(&buffer, &mut text, &mut partial_tool_calls)?;
         }
 
         Ok((text, finalize_partial_tool_calls(partial_tool_calls)))
+    }
+
+    async fn read_ollama_stream(
+        &self,
+        response: &mut reqwest::Response,
+    ) -> Result<(String, Vec<ToolUseCall>)> {
+        let mut text = String::new();
+        let mut tool_uses = Vec::new();
+        let mut buffer = String::new();
+        let mut stream_finished = false;
+
+        while !stream_finished
+            && let Some(chunk) = response
+                .chunk()
+                .await
+                .context("failed to read Ollama stream chunk")?
+        {
+            let chunk = String::from_utf8_lossy(&chunk);
+            buffer.push_str(&chunk);
+
+            while let Some(line) = next_ndjson_line(&mut buffer) {
+                if handle_ollama_stream_line(&line, &mut text, &mut tool_uses)? {
+                    stream_finished = true;
+                    break;
+                }
+            }
+        }
+
+        if !stream_finished && !buffer.trim().is_empty() {
+            let _ = handle_ollama_stream_line(buffer.trim(), &mut text, &mut tool_uses)?;
+        }
+
+        Ok((text, tool_uses))
     }
 
     fn authorized_request(
@@ -869,6 +888,16 @@ fn next_sse_event(buffer: &mut String) -> Option<String> {
     Some(event)
 }
 
+fn next_ndjson_line(buffer: &mut String) -> Option<String> {
+    let newline_idx = buffer.find('\n')?;
+    let mut line = buffer[..newline_idx].to_string();
+    if line.ends_with('\r') {
+        line.pop();
+    }
+    buffer.drain(..newline_idx + 1);
+    Some(line)
+}
+
 fn handle_openai_stream_event(
     event: &str,
     text: &mut String,
@@ -926,6 +955,38 @@ fn handle_openai_stream_event(
     }
 
     Ok(false)
+}
+
+fn handle_ollama_stream_line(
+    line: &str,
+    text: &mut String,
+    tool_uses: &mut Vec<ToolUseCall>,
+) -> Result<bool> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return Ok(false);
+    }
+
+    let response: OllamaChatResponse =
+        serde_json::from_str(trimmed).context("failed to parse Ollama stream JSON")?;
+
+    if let Some(content) = response.message.content {
+        if !content.is_empty() {
+            print!("{}", content);
+            flush_stdout()?;
+            text.push_str(&content);
+        }
+    }
+
+    if let Some(tool_calls) = response.message.tool_calls {
+        tool_uses.extend(tool_calls.into_iter().map(|tool_call| ToolUseCall {
+            id: None,
+            name: tool_call.function.name,
+            arguments: tool_call.function.arguments,
+        }));
+    }
+
+    Ok(response.done.unwrap_or(false))
 }
 
 fn finalize_partial_tool_calls(partial_tool_calls: Vec<PartialToolCall>) -> Vec<ToolUseCall> {
@@ -1471,6 +1532,14 @@ mod tests {
     }
 
     #[test]
+    fn next_ndjson_line_extracts_lines() {
+        let mut buffer = "{\"a\":1}\n{\"b\":2}\n".to_string();
+        assert_eq!(next_ndjson_line(&mut buffer).unwrap(), "{\"a\":1}");
+        assert_eq!(next_ndjson_line(&mut buffer).unwrap(), "{\"b\":2}");
+        assert!(next_ndjson_line(&mut buffer).is_none());
+    }
+
+    #[test]
     fn handle_openai_stream_event_appends_content() {
         let event = r#"data: {"choices":[{"delta":{"content":"hello"}}]}"#;
         let mut text = String::new();
@@ -1480,6 +1549,16 @@ mod tests {
         assert!(!done);
         assert_eq!(text, "hello");
         assert!(partial_tool_calls.is_empty());
+    }
+
+    #[test]
+    fn handle_openai_stream_event_recognizes_done() {
+        let mut text = String::new();
+        let mut partial_tool_calls = Vec::new();
+
+        let done =
+            handle_openai_stream_event("data: [DONE]", &mut text, &mut partial_tool_calls).unwrap();
+        assert!(done);
     }
 
     #[test]
@@ -1505,6 +1584,41 @@ mod tests {
         assert_eq!(tool_calls[0].id.as_deref(), Some("call_1"));
         assert_eq!(tool_calls[0].name, "Read");
         assert_eq!(tool_calls[0].arguments["file_path"], "src/main.rs");
+    }
+
+    #[test]
+    fn handle_ollama_stream_line_appends_content() {
+        let line = r#"{"message":{"role":"assistant","content":"hello"}}"#;
+        let mut text = String::new();
+        let mut tool_uses = Vec::new();
+
+        let done = handle_ollama_stream_line(line, &mut text, &mut tool_uses).unwrap();
+        assert!(!done);
+        assert_eq!(text, "hello");
+        assert!(tool_uses.is_empty());
+    }
+
+    #[test]
+    fn handle_ollama_stream_line_collects_tool_calls() {
+        let line = r#"{"message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"Read","arguments":{"file_path":"src/main.rs"}}}]}}"#;
+        let mut text = String::new();
+        let mut tool_uses = Vec::new();
+
+        let done = handle_ollama_stream_line(line, &mut text, &mut tool_uses).unwrap();
+        assert!(!done);
+        assert_eq!(tool_uses.len(), 1);
+        assert_eq!(tool_uses[0].name, "Read");
+        assert_eq!(tool_uses[0].arguments["file_path"], "src/main.rs");
+    }
+
+    #[test]
+    fn handle_ollama_stream_line_recognizes_done() {
+        let line = r#"{"done":true,"message":{"role":"assistant","content":""}}"#;
+        let mut text = String::new();
+        let mut tool_uses = Vec::new();
+
+        let done = handle_ollama_stream_line(line, &mut text, &mut tool_uses).unwrap();
+        assert!(done);
     }
 
     #[test]
