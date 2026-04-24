@@ -1,6 +1,15 @@
 # Changelog
 
-<!-- last-commit: 15db736 -->
+<!-- last-commit: 793e97d -->
+
+## v0.1.9 - 2026-04-24
+
+| Commit | Description |
+|--------|-------------|
+| `793e97d` | fix: Following up on the lag issue |
+| `1ae26e8` | fix: ollam support sse |
+| `2e3b107` | update CHANGELOG.md |
+
 
 ## v0.1.8 - 2026-04-23
 
