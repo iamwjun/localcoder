@@ -14,6 +14,7 @@ use std::fmt;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 const MEMORY_INDEX_FILENAME: &str = "MEMORY.md";
 const MAX_MEMORY_CONTEXT_FILES: usize = 12;
@@ -44,7 +45,14 @@ impl fmt::Display for MemoryType {
 #[derive(Debug, Clone)]
 pub struct MemoryStore {
     root: PathBuf,
+    state: Arc<Mutex<MemoryStoreState>>,
+}
+
+#[derive(Debug, Default)]
+struct MemoryStoreState {
     processed_visible_messages: usize,
+    extraction_running: bool,
+    queued_messages: Option<Vec<Value>>,
 }
 
 #[derive(Debug, Clone)]
@@ -87,12 +95,50 @@ impl MemoryStore {
             .with_context(|| format!("failed to create memory dir: {}", root.display()))?;
         Ok(Self {
             root,
-            processed_visible_messages,
+            state: Arc::new(Mutex::new(MemoryStoreState {
+                processed_visible_messages,
+                extraction_running: false,
+                queued_messages: None,
+            })),
         })
     }
 
-    pub fn set_processed_visible_messages(&mut self, count: usize) {
-        self.processed_visible_messages = count;
+    pub fn set_processed_visible_messages(&self, count: usize) {
+        self.state
+            .lock()
+            .expect("memory store state poisoned")
+            .processed_visible_messages = count;
+    }
+
+    pub fn spawn_extract_and_save(&self, client: LLMClient, messages: Vec<Value>) {
+        if model_visible_messages(&messages).is_empty() {
+            self.set_processed_visible_messages(0);
+            return;
+        }
+
+        {
+            let mut state = self.state.lock().expect("memory store state poisoned");
+            if state.extraction_running {
+                state.queued_messages = Some(messages);
+                return;
+            }
+            state.extraction_running = true;
+        }
+
+        let store = self.clone();
+        tokio::spawn(async move {
+            let mut pending_messages = Some(messages);
+
+            while let Some(current_messages) = pending_messages.take() {
+                let _ = store.extract_and_save(&client, &current_messages).await;
+
+                let mut state = store.state.lock().expect("memory store state poisoned");
+                pending_messages = state.queued_messages.take();
+                if pending_messages.is_none() {
+                    state.extraction_running = false;
+                }
+            }
+        });
     }
 
     pub fn build_system_prompt(&self) -> Result<Option<String>> {
@@ -194,20 +240,25 @@ impl MemoryStore {
     }
 
     pub async fn extract_and_save(
-        &mut self,
+        &self,
         client: &LLMClient,
         messages: &[Value],
     ) -> Result<Vec<SavedMemory>> {
         let visible = model_visible_messages(messages);
         if visible.is_empty() {
-            self.processed_visible_messages = 0;
+            self.set_processed_visible_messages(0);
             return Ok(Vec::new());
         }
 
-        let start = self.processed_visible_messages.min(visible.len());
+        let start = self
+            .state
+            .lock()
+            .expect("memory store state poisoned")
+            .processed_visible_messages
+            .min(visible.len());
         let mut slice = visible[start..].to_vec();
         if slice.is_empty() {
-            self.processed_visible_messages = visible.len();
+            self.set_processed_visible_messages(visible.len());
             return Ok(Vec::new());
         }
 
@@ -219,7 +270,7 @@ impl MemoryStore {
         let raw = client.complete_prompt(&prompt, 1400).await?;
         let extracted = parse_extract_response(&raw)?;
         let saved = self.persist_memories(extracted)?;
-        self.processed_visible_messages = visible.len();
+        self.set_processed_visible_messages(visible.len());
         Ok(saved)
     }
 
@@ -531,7 +582,7 @@ mod tests {
         let fake_home = TempDir::new().unwrap();
         let store = MemoryStore {
             root: memory_root_with_home(project.path(), Some(fake_home.path())).unwrap(),
-            processed_visible_messages: 0,
+            state: Arc::new(Mutex::new(MemoryStoreState::default())),
         };
         fs::create_dir_all(&store.root).unwrap();
 
@@ -557,7 +608,7 @@ mod tests {
         let fake_home = TempDir::new().unwrap();
         let store = MemoryStore {
             root: memory_root_with_home(project.path(), Some(fake_home.path())).unwrap(),
-            processed_visible_messages: 0,
+            state: Arc::new(Mutex::new(MemoryStoreState::default())),
         };
         fs::create_dir_all(&store.root).unwrap();
 

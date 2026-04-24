@@ -138,6 +138,7 @@ struct PartialToolCall {
 }
 
 /// LLM client used by the REPL and agent loop.
+#[derive(Clone)]
 pub struct LLMClient {
     client: Client,
     provider: Provider,

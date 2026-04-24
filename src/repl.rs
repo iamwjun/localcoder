@@ -608,18 +608,7 @@ async fn run_user_turn(
                     s.append_messages(&messages[before_len..])?;
                 }
                 *display_history = rebuild_display_history(messages);
-                let saved_memories = memory_store.extract_and_save(client, messages).await?;
-                if !saved_memories.is_empty() {
-                    println!(
-                        "{} {}",
-                        "🧠 Saved memories:".cyan().bold(),
-                        saved_memories
-                            .iter()
-                            .map(|m| format!("[{}] {}", m.memory_type, m.name))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    );
-                }
+                memory_store.spawn_extract_and_save(client.clone(), messages.clone());
                 Ok(())
             }
             Err(err) => {

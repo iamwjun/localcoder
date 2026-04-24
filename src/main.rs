@@ -176,7 +176,7 @@ async fn one_shot(
     }
 
     let client = api::LLMClient::new()?;
-    let mut memory_store = memory::MemoryStore::new(&cwd, 0)?;
+    let memory_store = memory::MemoryStore::new(&cwd, 0)?;
     let mut effective_prompt = prompt.trim().to_string();
 
     if let Some((skill_name, args)) = parse_slash_skill(prompt) {
