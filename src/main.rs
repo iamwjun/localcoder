@@ -14,13 +14,15 @@ mod repl;
 mod services;
 mod session;
 mod skills;
+mod terminal_style;
 mod tools;
 mod types;
 
 use anyhow::{Result, anyhow};
-use colored::*;
 use repl::ResumeTarget;
 use std::env;
+
+use crate::terminal_style::StyleExt;
 
 #[tokio::main]
 async fn main() -> Result<()> {

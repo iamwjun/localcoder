@@ -20,7 +20,7 @@ anyhow = "1.0"
 # CLI interaction
 rustyline = "14.0"
 # Terminal colors
-colored = "2.1"
+oxink = "0.1.1"
 # File globbing (S03 GlobTool)
 glob = "0.3"
 # File walking with .gitignore support (S03 GrepTool)

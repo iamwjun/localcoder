@@ -6,9 +6,12 @@
  * Run: cargo run --example basic
  */
 
+#[path = "../src/terminal_style.rs"]
+mod terminal_style;
+
 use anyhow::Result;
-use colored::*;
 use serde_json::json;
+use terminal_style::StyleExt;
 
 #[tokio::main]
 async fn main() -> Result<()> {

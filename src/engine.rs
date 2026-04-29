@@ -17,10 +17,10 @@
  */
 
 use anyhow::Result;
-use colored::*;
 use serde_json::{Value, json};
 
 use crate::api::LLMClient;
+use crate::terminal_style::StyleExt;
 use crate::tools::ToolRegistry;
 use crate::types::ToolUseCall;
 

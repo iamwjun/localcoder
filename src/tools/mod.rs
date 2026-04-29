@@ -46,8 +46,8 @@ pub use web_search::WebSearchTool;
 
 use crate::plan::PlanManager;
 use crate::skills::SkillManager;
+use crate::terminal_style::StyleExt;
 use anyhow::{Result, anyhow};
-use colored::*;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 

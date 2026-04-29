@@ -254,7 +254,7 @@ localcoder/
 | JSON handling | serde + serde_json 1.0 |
 | Line editing | rustyline 14.0 |
 | Error handling | anyhow |
-| Terminal colors | colored 2.1 |
+| Terminal colors | oxink 0.1.1 |
 
 ---
 
