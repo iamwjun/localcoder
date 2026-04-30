@@ -1,6 +1,15 @@
 # Changelog
 
-<!-- last-commit: 793e97d -->
+<!-- last-commit: f7db5e7 -->
+
+## v0.1.10 - 2026-04-30
+
+| Commit | Description |
+|--------|-------------|
+| `f7db5e7` | chore: replace colored with oxink |
+| `1939d9f` | docs: S20-server.md |
+| `facf05f` | update CHANGELOG.md |
+
 
 ## v0.1.9 - 2026-04-24
 
