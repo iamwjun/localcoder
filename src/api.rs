@@ -137,6 +137,19 @@ struct PartialToolCall {
     arguments: String,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ToolCallOptions {
+    pub stream_to_stdout: bool,
+}
+
+impl Default for ToolCallOptions {
+    fn default() -> Self {
+        Self {
+            stream_to_stdout: true,
+        }
+    }
+}
+
 /// LLM client used by the REPL and agent loop.
 #[derive(Clone)]
 pub struct LLMClient {
@@ -375,10 +388,20 @@ impl LLMClient {
         messages: &[Value],
         tools: &[Value],
     ) -> Result<AgentResponse> {
+        self.call_with_tools_with_options(messages, tools, ToolCallOptions::default())
+            .await
+    }
+
+    pub async fn call_with_tools_with_options(
+        &self,
+        messages: &[Value],
+        tools: &[Value],
+        options: ToolCallOptions,
+    ) -> Result<AgentResponse> {
         match self.provider {
-            Provider::Ollama => self.call_with_tools_ollama(messages, tools).await,
+            Provider::Ollama => self.call_with_tools_ollama(messages, tools, options).await,
             Provider::LMStudio | Provider::OpenAI => {
-                self.call_with_tools_openai_compatible(messages, tools)
+                self.call_with_tools_openai_compatible(messages, tools, options)
                     .await
             }
         }
@@ -388,6 +411,7 @@ impl LLMClient {
         &self,
         messages: &[Value],
         tools: &[Value],
+        options: ToolCallOptions,
     ) -> Result<AgentResponse> {
         let body = if tools.is_empty() {
             json!({
@@ -426,7 +450,7 @@ impl LLMClient {
         }
 
         let (text, tool_uses) = self
-            .read_ollama_stream(&mut response)
+            .read_ollama_stream(&mut response, options.stream_to_stdout)
             .await
             .context("failed to parse Ollama stream")?;
 
@@ -437,6 +461,7 @@ impl LLMClient {
         &self,
         messages: &[Value],
         tools: &[Value],
+        options: ToolCallOptions,
     ) -> Result<AgentResponse> {
         let openai_messages = messages
             .iter()
@@ -485,7 +510,7 @@ impl LLMClient {
         }
 
         let (text, tool_uses) = self
-            .read_openai_compatible_stream(&mut response)
+            .read_openai_compatible_stream(&mut response, options.stream_to_stdout)
             .await
             .with_context(|| format!("failed to parse {} stream", self.provider_name()))?;
 
@@ -602,6 +627,7 @@ impl LLMClient {
     async fn read_openai_compatible_stream(
         &self,
         response: &mut reqwest::Response,
+        stream_to_stdout: bool,
     ) -> Result<(String, Vec<ToolUseCall>)> {
         let mut text = String::new();
         let mut partial_tool_calls = Vec::new();
@@ -618,7 +644,12 @@ impl LLMClient {
             buffer.push_str(&chunk);
 
             while let Some(event) = next_sse_event(&mut buffer) {
-                if handle_openai_stream_event(&event, &mut text, &mut partial_tool_calls)? {
+                if handle_openai_stream_event(
+                    &event,
+                    &mut text,
+                    &mut partial_tool_calls,
+                    stream_to_stdout,
+                )? {
                     stream_finished = true;
                     break;
                 }
@@ -626,7 +657,12 @@ impl LLMClient {
         }
 
         if !stream_finished && !buffer.trim().is_empty() {
-            let _ = handle_openai_stream_event(&buffer, &mut text, &mut partial_tool_calls)?;
+            let _ = handle_openai_stream_event(
+                &buffer,
+                &mut text,
+                &mut partial_tool_calls,
+                stream_to_stdout,
+            )?;
         }
 
         Ok((text, finalize_partial_tool_calls(partial_tool_calls)))
@@ -635,6 +671,7 @@ impl LLMClient {
     async fn read_ollama_stream(
         &self,
         response: &mut reqwest::Response,
+        stream_to_stdout: bool,
     ) -> Result<(String, Vec<ToolUseCall>)> {
         let mut text = String::new();
         let mut tool_uses = Vec::new();
@@ -651,7 +688,7 @@ impl LLMClient {
             buffer.push_str(&chunk);
 
             while let Some(line) = next_ndjson_line(&mut buffer) {
-                if handle_ollama_stream_line(&line, &mut text, &mut tool_uses)? {
+                if handle_ollama_stream_line(&line, &mut text, &mut tool_uses, stream_to_stdout)? {
                     stream_finished = true;
                     break;
                 }
@@ -659,7 +696,12 @@ impl LLMClient {
         }
 
         if !stream_finished && !buffer.trim().is_empty() {
-            let _ = handle_ollama_stream_line(buffer.trim(), &mut text, &mut tool_uses)?;
+            let _ = handle_ollama_stream_line(
+                buffer.trim(),
+                &mut text,
+                &mut tool_uses,
+                stream_to_stdout,
+            )?;
         }
 
         Ok((text, tool_uses))
@@ -903,6 +945,7 @@ fn handle_openai_stream_event(
     event: &str,
     text: &mut String,
     partial_tool_calls: &mut Vec<PartialToolCall>,
+    stream_to_stdout: bool,
 ) -> Result<bool> {
     let data = event
         .lines()
@@ -925,8 +968,10 @@ fn handle_openai_stream_event(
     for choice in response.choices {
         if let Some(content) = choice.delta.content {
             if !content.is_empty() {
-                print!("{}", content);
-                flush_stdout()?;
+                if stream_to_stdout {
+                    print!("{}", content);
+                    flush_stdout()?;
+                }
                 text.push_str(&content);
             }
         }
@@ -962,6 +1007,7 @@ fn handle_ollama_stream_line(
     line: &str,
     text: &mut String,
     tool_uses: &mut Vec<ToolUseCall>,
+    stream_to_stdout: bool,
 ) -> Result<bool> {
     let trimmed = line.trim();
     if trimmed.is_empty() {
@@ -973,8 +1019,10 @@ fn handle_ollama_stream_line(
 
     if let Some(content) = response.message.content {
         if !content.is_empty() {
-            print!("{}", content);
-            flush_stdout()?;
+            if stream_to_stdout {
+                print!("{}", content);
+                flush_stdout()?;
+            }
             text.push_str(&content);
         }
     }
@@ -1546,7 +1594,8 @@ mod tests {
         let mut text = String::new();
         let mut partial_tool_calls = Vec::new();
 
-        let done = handle_openai_stream_event(event, &mut text, &mut partial_tool_calls).unwrap();
+        let done =
+            handle_openai_stream_event(event, &mut text, &mut partial_tool_calls, false).unwrap();
         assert!(!done);
         assert_eq!(text, "hello");
         assert!(partial_tool_calls.is_empty());
@@ -1558,7 +1607,8 @@ mod tests {
         let mut partial_tool_calls = Vec::new();
 
         let done =
-            handle_openai_stream_event("data: [DONE]", &mut text, &mut partial_tool_calls).unwrap();
+            handle_openai_stream_event("data: [DONE]", &mut text, &mut partial_tool_calls, false)
+                .unwrap();
         assert!(done);
     }
 
@@ -1571,12 +1621,14 @@ mod tests {
             r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"Read","arguments":"{\"file_path\":\"src/"}}]}}]}"#,
             &mut text,
             &mut partial_tool_calls,
+            false,
         )
         .unwrap();
         handle_openai_stream_event(
             r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"main.rs\"}"}}]}}]}"#,
             &mut text,
             &mut partial_tool_calls,
+            false,
         )
         .unwrap();
 
@@ -1593,7 +1645,7 @@ mod tests {
         let mut text = String::new();
         let mut tool_uses = Vec::new();
 
-        let done = handle_ollama_stream_line(line, &mut text, &mut tool_uses).unwrap();
+        let done = handle_ollama_stream_line(line, &mut text, &mut tool_uses, false).unwrap();
         assert!(!done);
         assert_eq!(text, "hello");
         assert!(tool_uses.is_empty());
@@ -1605,7 +1657,7 @@ mod tests {
         let mut text = String::new();
         let mut tool_uses = Vec::new();
 
-        let done = handle_ollama_stream_line(line, &mut text, &mut tool_uses).unwrap();
+        let done = handle_ollama_stream_line(line, &mut text, &mut tool_uses, false).unwrap();
         assert!(!done);
         assert_eq!(tool_uses.len(), 1);
         assert_eq!(tool_uses[0].name, "Read");
@@ -1618,7 +1670,7 @@ mod tests {
         let mut text = String::new();
         let mut tool_uses = Vec::new();
 
-        let done = handle_ollama_stream_line(line, &mut text, &mut tool_uses).unwrap();
+        let done = handle_ollama_stream_line(line, &mut text, &mut tool_uses, false).unwrap();
         assert!(done);
     }
 

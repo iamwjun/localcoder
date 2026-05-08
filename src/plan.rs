@@ -78,9 +78,7 @@ pub struct PlanManager {
 
 impl PlanManager {
     pub fn new(project_dir: &Path) -> Result<Self> {
-        let root = plan_root(project_dir)?;
-        fs::create_dir_all(&root)
-            .with_context(|| format!("failed to create plan dir: {}", root.display()))?;
+        let root = ensure_plan_root(project_dir)?;
         let state = load_state(&root)?;
         let manager = Self {
             root,
@@ -314,6 +312,19 @@ fn plan_root(project_dir: &Path) -> Result<PathBuf> {
     )
 }
 
+fn ensure_plan_root(project_dir: &Path) -> Result<PathBuf> {
+    let preferred = plan_root(project_dir)?;
+    match fs::create_dir_all(&preferred) {
+        Ok(()) => Ok(preferred),
+        Err(_) => {
+            let fallback = project_local_plan_root(project_dir);
+            fs::create_dir_all(&fallback)
+                .with_context(|| format!("failed to create plan dir: {}", fallback.display()))?;
+            Ok(fallback)
+        }
+    }
+}
+
 fn plan_root_with_home(project_dir: &Path, home: Option<&Path>) -> Result<PathBuf> {
     let canonical = fs::canonicalize(project_dir)
         .with_context(|| format!("failed to canonicalize path: {}", project_dir.display()))?;
@@ -327,6 +338,10 @@ fn plan_root_with_home(project_dir: &Path, home: Option<&Path>) -> Result<PathBu
         .join("projects")
         .join(hash)
         .join("plan"))
+}
+
+fn project_local_plan_root(project_dir: &Path) -> PathBuf {
+    project_dir.join(".localcoder").join("plan")
 }
 
 #[cfg(test)]

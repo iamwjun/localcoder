@@ -28,6 +28,8 @@ ignore = "0.4"
 # Regex engine (S03 GrepTool)
 regex = "1"
 serde_yaml = "0.9"
+axum = { version = "0.8", features = ["ws"] }
+futures-util = "0.3"
 
 [profile.release]
 opt-level = 3

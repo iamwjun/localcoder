@@ -19,10 +19,15 @@
 use anyhow::Result;
 use serde_json::{Value, json};
 
-use crate::api::LLMClient;
+use crate::api::{LLMClient, ToolCallOptions};
 use crate::terminal_style::StyleExt;
 use crate::tools::ToolRegistry;
 use crate::types::ToolUseCall;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EngineOptions {
+    pub silent: bool,
+}
 
 /// Run the agent loop until the model reaches a terminal stop reason.
 ///
@@ -44,17 +49,46 @@ pub async fn run_agent_loop_with_system_prompt(
     messages: &mut Vec<Value>,
     system_prompt: Option<&str>,
 ) -> Result<String> {
+    run_agent_loop_with_system_prompt_and_options(
+        client,
+        registry,
+        messages,
+        system_prompt,
+        EngineOptions::default(),
+    )
+    .await
+}
+
+pub async fn run_agent_loop_with_system_prompt_and_options(
+    client: &LLMClient,
+    registry: &ToolRegistry,
+    messages: &mut Vec<Value>,
+    system_prompt: Option<&str>,
+    options: EngineOptions,
+) -> Result<String> {
     let result = async {
         let mut needs_followup_newline = false;
         loop {
-            if needs_followup_newline {
+            if needs_followup_newline && !options.silent {
                 println!();
             }
 
             // ── 1. Call the model ─────────────────────────────────────────
             let request_messages = build_request_messages(registry, messages, system_prompt);
             let tools = registry.get_schemas();
-            let response = client.call_with_tools(&request_messages, &tools).await?;
+            let response = if options.silent {
+                client
+                    .call_with_tools_with_options(
+                        &request_messages,
+                        &tools,
+                        ToolCallOptions {
+                            stream_to_stdout: false,
+                        },
+                    )
+                    .await?
+            } else {
+                client.call_with_tools(&request_messages, &tools).await?
+            };
 
             // ── 2. Append assistant message to conversation history ───────
             messages.push(build_assistant_message(&response.text, &response.tool_uses));
@@ -65,17 +99,23 @@ pub async fn run_agent_loop_with_system_prompt(
             }
 
             // ── 4. Execute tool calls and collect results ─────────────────
-            print!("{}", response_section_break(&response.text));
+            if !options.silent {
+                print!("{}", response_section_break(&response.text));
+            }
             let mut tool_results: Vec<Value> = Vec::new();
 
             for call in prioritize_tool_calls(&response.tool_uses) {
-                println!("{}", format!("▶ Tool: {}", call.name).cyan());
+                if !options.silent {
+                    println!("{}", format!("▶ Tool: {}", call.name).cyan());
+                }
 
                 let (content, is_error) =
                     match registry.execute(&call.name, call.arguments.clone()).await {
                         Ok(result) => (result, false),
                         Err(e) => {
-                            eprintln!("{} {}", "  ✗ Tool error:".red(), e);
+                            if !options.silent {
+                                eprintln!("{} {}", "  ✗ Tool error:".red(), e);
+                            }
                             (e.to_string(), true)
                         }
                     };

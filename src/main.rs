@@ -11,6 +11,8 @@ mod memory;
 mod output_style;
 mod plan;
 mod repl;
+mod runtime;
+mod server;
 mod services;
 mod session;
 mod skills;
@@ -29,6 +31,7 @@ async fn main() -> Result<()> {
     api::LLMClient::ensure_settings_file()?;
     let cwd = env::current_dir()?;
     let client = api::LLMClient::new()?;
+    let runtime = runtime::build_runtime(&cwd)?;
 
     print_banner();
     println!(
@@ -37,40 +40,19 @@ async fn main() -> Result<()> {
         client.provider_name().green().bold()
     );
 
-    let output_style_manager = output_style::OutputStyleManager::new(&cwd);
-    let plan_manager = plan::PlanManager::new(&cwd)?;
-    let skill_manager = skills::SkillManager::new(&cwd)?;
-    let mut registry = tools::ToolRegistry::new();
-    registry.attach_plan_manager(plan_manager.clone());
-    registry.attach_skill_manager(skill_manager.clone());
-    registry.register(tools::EchoTool);
-    registry.register(tools::ReadTool);
-    registry.register(tools::EditTool);
-    registry.register(tools::WriteTool);
-    registry.register(tools::GlobTool);
-    registry.register(tools::GrepTool);
-    registry.register(tools::BashTool);
-    registry.register(tools::LspTool::new(&cwd)?);
-    registry.register(tools::WebFetchTool);
-    registry.register(tools::WebSearchTool);
-    registry.register(tools::EnterPlanModeTool::new(plan_manager.clone()));
-    registry.register(tools::ExitPlanModeTool::new(plan_manager.clone()));
-    registry.register(tools::TodoWriteTool::new(plan_manager.clone()));
-    registry.register(tools::SkillTool::new(skill_manager.clone()));
-
     let args: Vec<String> = env::args().skip(1).collect();
     let (resume_target, prompt_args) = parse_args(args)?;
 
     if prompt_args.is_empty() {
-        repl::start_repl(registry, resume_target).await?;
+        repl::start_repl(runtime.registry, resume_target).await?;
     } else {
         let prompt = prompt_args.join(" ");
         one_shot(
             &prompt,
-            registry,
-            output_style_manager,
-            plan_manager,
-            skill_manager,
+            runtime.registry,
+            runtime.output_style_manager,
+            runtime.plan_manager,
+            runtime.skill_manager,
         )
         .await?;
     }
@@ -131,6 +113,18 @@ async fn one_shot(
 ) -> Result<()> {
     let cwd = env::current_dir()?;
     let mut app_config = config::AppConfig::load(&cwd)?;
+    if let Some(server_args) = parse_command_arg(prompt, "/server") {
+        match server::parse_server_command(server_args)? {
+            server::ServerCommand::Start(config) => {
+                server::run_server_foreground(config, &cwd).await?;
+            }
+            server::ServerCommand::Status | server::ServerCommand::Stop => {
+                anyhow::bail!("one-shot mode only supports /server or /server <host:port>");
+            }
+        }
+        return Ok(());
+    }
+
     if prompt.trim() == "/plan" {
         println!("{}", "📋 Plan Status:".cyan().bold());
         println!("{}", plan_manager.render_status());
@@ -197,12 +191,12 @@ async fn one_shot(
     println!("{} {}", "💬 User:".green().bold(), effective_prompt);
     println!();
 
-    let base_system_prompt = merge_system_prompts([
-        memory_store.build_system_prompt()?,
-        skill_manager.build_system_prompt()?,
-    ]);
-    let system_prompt =
-        output_style_manager.apply_selected_style(&app_config.output_style, base_system_prompt)?;
+    let system_prompt = runtime::build_base_system_prompt(
+        &memory_store,
+        &output_style_manager,
+        &app_config.output_style,
+        Some(&skill_manager),
+    )?;
     println!("{}", "🤖 Model is thinking...\n".yellow());
 
     let mut messages = vec![serde_json::json!({"role": "user", "content": effective_prompt})];
@@ -299,21 +293,6 @@ mod tests {
     #[test]
     fn parse_command_arg_rejects_partial_prefix() {
         assert_eq!(parse_command_arg("/webbing x", "/web"), None);
-    }
-}
-
-fn merge_system_prompts<const N: usize>(parts: [Option<String>; N]) -> Option<String> {
-    let joined = parts
-        .into_iter()
-        .flatten()
-        .filter(|part| !part.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n");
-
-    if joined.trim().is_empty() {
-        None
-    } else {
-        Some(joined)
     }
 }
 

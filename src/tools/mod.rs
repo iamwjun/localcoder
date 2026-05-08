@@ -46,7 +46,6 @@ pub use web_search::WebSearchTool;
 
 use crate::plan::PlanManager;
 use crate::skills::SkillManager;
-use crate::terminal_style::StyleExt;
 use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -290,7 +289,6 @@ impl Tool for EchoTool {
         let text = input["text"]
             .as_str()
             .ok_or_else(|| anyhow!("echo_tool: missing required field 'text'"))?;
-        println!("{}", format!("  [echo_tool] → {}", text).dimmed());
         Ok(text.to_string())
     }
 }

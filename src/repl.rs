@@ -10,6 +10,8 @@ use crate::git;
 use crate::memory::MemoryStore;
 use crate::output_style::OutputStyleManager;
 use crate::plan::PlanManager;
+use crate::runtime;
+use crate::server::{self, ServerHandle};
 use crate::session::SessionStore;
 use crate::skills::SkillManager;
 use crate::terminal_style::StyleExt;
@@ -51,6 +53,7 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
     }
 
     let mut display_history = rebuild_display_history(&messages);
+    let mut server_handle: Option<ServerHandle> = None;
 
     let mut rl = DefaultEditor::new()?;
 
@@ -175,6 +178,14 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
                         continue;
                     }
 
+                    if let Some(args) = command_arg(input, "/server") {
+                        if let Err(e) = handle_server_command(&cwd, args, &mut server_handle).await
+                        {
+                            eprintln!("\n{} {}", "❌ Server command failed:".red().bold(), e);
+                        }
+                        continue;
+                    }
+
                     if let Some(args) = command_arg(input, "/plan") {
                         if let Some(manager) = plan_manager.as_ref() {
                             if let Err(e) = handle_plan_command(manager, args) {
@@ -267,6 +278,10 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
                 break;
             }
         }
+    }
+
+    if let Some(handle) = server_handle.take() {
+        let _ = handle.stop().await;
     }
 
     Ok(())
@@ -363,6 +378,10 @@ fn print_instructions(client: &LLMClient, app_config: &AppConfig) {
         );
         println!("  - Type {} to run a web search", "/web <query>".yellow());
         println!("  - Type {} to fetch a web page", "/fetch <url>".yellow());
+        println!(
+            "  - Type {} to start, stop, or inspect the local server",
+            "/server [status|stop|host:port]".yellow()
+        );
         println!("  - Type {} to show or toggle plan mode", "/plan".yellow());
         println!("  - Type {} to list available skills", "/skills".yellow());
         println!(
@@ -492,6 +511,10 @@ fn print_help() {
         "  {}         - Fetch a public web page",
         "/fetch <url>".yellow()
     );
+    println!(
+        "  {} - Start, stop, or inspect the local server",
+        "/server [status|stop|host:port]".yellow()
+    );
     println!("  {}             - Show plan status", "/plan".yellow());
     println!(
         "  {}        - Enable plan mode manually",
@@ -585,10 +608,10 @@ async fn run_user_turn(
         maybe_auto_compact(client, session, messages, display_history).await?;
 
         let before_len = messages.len();
-        let system_prompt = build_base_system_prompt(
+        let system_prompt = runtime::build_base_system_prompt(
             memory_store,
             output_style_manager,
-            app_config,
+            &app_config.output_style,
             skill_manager,
         )?;
 
@@ -727,6 +750,74 @@ async fn handle_web_fetch_command(url: &str) -> Result<()> {
     Ok(())
 }
 
+async fn handle_server_command(
+    cwd: &std::path::Path,
+    args: &str,
+    server_handle: &mut Option<ServerHandle>,
+) -> Result<()> {
+    if server_handle
+        .as_ref()
+        .map(ServerHandle::is_finished)
+        .unwrap_or(false)
+    {
+        if let Some(handle) = server_handle.take() {
+            match handle.stop().await {
+                Ok(()) => println!(
+                    "\n{}",
+                    "ℹ️ Previous background server already stopped".yellow()
+                ),
+                Err(err) => eprintln!(
+                    "\n{} {}",
+                    "⚠️ Background server exited unexpectedly:".yellow().bold(),
+                    err
+                ),
+            }
+        }
+    }
+
+    match server::parse_server_command(args)? {
+        server::ServerCommand::Status => {
+            if let Some(handle) = server_handle.as_ref() {
+                println!(
+                    "\n{} http://{}",
+                    "🌐 Server is running at".cyan().bold(),
+                    handle.addr()
+                );
+            } else {
+                println!("\n{}", "ℹ️ Server is not running".yellow());
+            }
+        }
+        server::ServerCommand::Stop => {
+            if let Some(handle) = server_handle.take() {
+                handle.stop().await?;
+                println!("\n{}", "🛑 Server stopped".green());
+            } else {
+                println!("\n{}", "ℹ️ Server is not running".yellow());
+            }
+        }
+        server::ServerCommand::Start(config) => {
+            if let Some(handle) = server_handle.as_ref() {
+                println!(
+                    "\n{} http://{}",
+                    "🌐 Server is already running at".cyan().bold(),
+                    handle.addr()
+                );
+                return Ok(());
+            }
+
+            let handle = server::start_server(config, cwd.to_path_buf()).await?;
+            println!(
+                "\n{} http://{}",
+                "🌐 Server started at".green().bold(),
+                handle.addr()
+            );
+            *server_handle = Some(handle);
+        }
+    }
+
+    Ok(())
+}
+
 fn handle_plan_command(plan_manager: &PlanManager, args: &str) -> Result<()> {
     let arg = args.trim().to_ascii_lowercase();
     match arg.as_str() {
@@ -760,33 +851,6 @@ fn handle_skills_command(skill_manager: &SkillManager) -> Result<()> {
     println!("\n{}", "🧩 Available skills:".cyan().bold());
     println!("{}", skill_manager.render_user_invocable_list()?);
     Ok(())
-}
-
-fn build_base_system_prompt(
-    memory_store: &MemoryStore,
-    output_style_manager: &OutputStyleManager,
-    app_config: &AppConfig,
-    skill_manager: Option<&SkillManager>,
-) -> Result<Option<String>> {
-    let memory_prompt = memory_store.build_system_prompt()?;
-    let skill_prompt = match skill_manager {
-        Some(manager) => manager.build_system_prompt()?,
-        None => None,
-    };
-
-    let joined = [memory_prompt, skill_prompt]
-        .into_iter()
-        .flatten()
-        .filter(|part| !part.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n");
-
-    let base_prompt = if joined.trim().is_empty() {
-        None
-    } else {
-        Some(joined)
-    };
-    output_style_manager.apply_selected_style(&app_config.output_style, base_prompt)
 }
 
 async fn handle_manual_compact(

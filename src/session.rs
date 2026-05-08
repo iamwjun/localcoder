@@ -11,7 +11,10 @@ use std::fs::{self, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+static SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
 pub struct SessionStore {
@@ -207,6 +210,7 @@ fn message_to_event(message: &Value) -> Result<Value> {
         })),
         "tool" => Ok(json!({
             "type": "tool_result",
+            "tool_call_id": message.get("tool_call_id").cloned().unwrap_or(Value::Null),
             "tool_name": message["tool_name"].as_str().unwrap_or_default(),
             "content": message["content"].as_str().unwrap_or_default(),
             "is_error": message["is_error"].as_bool().unwrap_or(false),
@@ -238,6 +242,7 @@ fn event_to_message(event: &Value) -> Option<Value> {
         })),
         "tool_result" => Some(json!({
             "role": "tool",
+            "tool_call_id": event.get("tool_call_id").cloned().unwrap_or(Value::Null),
             "tool_name": event["tool_name"].as_str().unwrap_or_default(),
             "content": event["content"].as_str().unwrap_or_default(),
             "is_error": event["is_error"].as_bool().unwrap_or(false),
@@ -280,9 +285,13 @@ fn localcoder_home_with_home(home: Option<&Path>) -> Result<PathBuf> {
 }
 
 fn generate_session_id() -> String {
-    let ts = now_ts();
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
     let pid = std::process::id();
-    format!("s{}-{}", ts, pid)
+    let seq = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("s{}-{}-{}", ts, pid, seq)
 }
 
 #[cfg(test)]
@@ -303,6 +312,22 @@ mod tests {
             event_to_message(&assistant_event).unwrap()["role"],
             "assistant"
         );
+    }
+
+    #[test]
+    fn message_event_roundtrip_preserves_tool_call_id() {
+        let tool = json!({
+            "role":"tool",
+            "tool_call_id":"call_123",
+            "tool_name":"Read",
+            "content":"ok",
+            "is_error":false
+        });
+
+        let event = message_to_event(&tool).unwrap();
+        let restored = event_to_message(&event).unwrap();
+        assert_eq!(restored["role"], "tool");
+        assert_eq!(restored["tool_call_id"], "call_123");
     }
 
     #[test]
@@ -409,6 +434,13 @@ mod tests {
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0]["role"], "system");
         assert_eq!(loaded[1]["content"], "new");
+    }
+
+    #[test]
+    fn create_generates_distinct_session_ids() {
+        let first = generate_session_id();
+        let second = generate_session_id();
+        assert_ne!(first, second);
     }
 
     fn list_with_home(project_dir: &Path, home: Option<&Path>) -> Result<Vec<SessionStore>> {
