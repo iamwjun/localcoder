@@ -1,6 +1,14 @@
 # Changelog
 
-<!-- last-commit: f7db5e7 -->
+<!-- last-commit: 5c6e6ad -->
+
+## v0.1.11 - 2026-05-08
+
+| Commit | Description |
+|--------|-------------|
+| `5c6e6ad` | feat: support /server |
+| `acf74b8` | update CHANGELOG.md |
+
 
 ## v0.1.10 - 2026-04-30
 

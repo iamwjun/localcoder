@@ -11,6 +11,7 @@ Localcoder is a Claude-like command-line AI assistant implemented in Rust. The c
 - ✅ Ollama-backed chat with streaming responses and one-shot mode
 - ✅ Tool calling runtime with file, search, Bash, web, and LSP tools
 - ✅ Interactive REPL with model switching, session resume, config UI, and output styles
+- ✅ Local server mode with HTTP and WebSocket entrypoints
 - ✅ Context compaction, git workflows, memory extraction, plan mode, and skills
 - ✅ Lightweight runtime with fast startup and low memory usage
 
@@ -20,7 +21,7 @@ Localcoder is a Claude-like command-line AI assistant implemented in Rust. The c
 
 ## 📊 Implementation Status
 
-The staged roadmap in [`docs/P00-plan.md`](./docs/P00-plan.md) is mostly implemented. Current status: **15 / 20 stages completed**.
+The staged roadmap in [`docs/P00-plan.md`](./docs/P00-plan.md) is mostly implemented. Current status: **16 / 21 stages completed**.
 
 | Stage | Area | Status | Deliverable |
 |------|------|------|------|
@@ -44,6 +45,7 @@ The staged roadmap in [`docs/P00-plan.md`](./docs/P00-plan.md) is mostly impleme
 | S17 | MCP integration | ❌ | MCP client and transport support are not implemented yet |
 | S18 | Output styles | ✅ | Output style loading and `/output-style` |
 | S19 | LSP integration | ✅ | Language-server-backed code navigation via `Lsp` |
+| S20 | Server mode | ✅ | Axum-based local HTTP and WebSocket server via `/server` |
 
 ---
 
@@ -93,7 +95,7 @@ On startup, Localcoder automatically checks for a settings file:
 
 - It first looks for `.localcoder/settings.json` in the current directory
 - If that file does not exist, it falls back to `$HOME/.localcoder/settings.json`
-- If neither exists, it creates a default config in the current directory
+- If neither exists, it creates a default config in `$HOME/.localcoder/settings.json`
 
 The default config format is:
 
@@ -150,7 +152,76 @@ localcoder --continue
 
 # Resume a specific session
 localcoder --resume s1712345678-12345
+
+# Start the local server in the foreground
+localcoder -- "/server"
+
+# Start the local server on a custom address
+localcoder -- "/server 127.0.0.1:4000"
 ```
+
+---
+
+## 🌐 Server Mode
+
+Localcoder can also run as a local HTTP and WebSocket server. The default bind address is `127.0.0.1:3000`.
+
+You can start it in either mode:
+
+```bash
+# Start in the REPL, but keep the REPL usable
+/server
+/server status
+/server stop
+
+# Start in one-shot mode and keep the process in the foreground
+localcoder -- "/server"
+localcoder -- "/server 127.0.0.1:4000"
+```
+
+Available routes:
+
+- `GET /healthz`
+- `POST /v1/message`
+- `GET /v1/ws`
+
+Example HTTP request:
+
+```bash
+curl -X POST http://127.0.0.1:3000/v1/message \
+  -H "content-type: application/json" \
+  -d '{
+    "message": "Explain the role of src/main.rs",
+    "session_id": "",
+    "output_style": "default"
+  }'
+```
+
+Example response:
+
+```json
+{
+  "session_id": "s1746690000000-12345-0",
+  "reply": "src/main.rs bootstraps configuration, registers tools, and decides between REPL and one-shot execution.",
+  "model": "qwen3.5:4b"
+}
+```
+
+WebSocket messages are JSON-based and currently one request maps to one full agent execution:
+
+```json
+{
+  "type": "message",
+  "message": "Continue the previous turn and summarize main.rs",
+  "session_id": "s1746690000000-12345-0"
+}
+```
+
+The server is intentionally local-first:
+
+- It listens on `127.0.0.1` by default
+- There is no built-in auth or TLS yet
+- `wss` should be handled by a reverse proxy if needed
 
 ---
 
@@ -189,6 +260,7 @@ localcoder -- "Fetch https://www.rust-lang.org/"
 | `/output-style [name]` | List or switch output styles |
 | `/web <query>` | Search the public web directly |
 | `/fetch <url>` | Fetch a public web page |
+| `/server [status\|stop\|host:port]` | Start, stop, or inspect the local HTTP/WebSocket server |
 | `/plan` | Show plan-mode status |
 | `/plan on` | Enable plan mode manually |
 | `/plan off` | Disable plan mode manually |
@@ -218,7 +290,7 @@ localcoder/
 ├── README.zh.md         # Chinese documentation
 ├── docs/                # Roadmap and stage-by-stage implementation notes
 │   ├── P00-plan.md      # Overall staged plan
-│   └── S00-S19*.md      # Detailed stage documents
+│   └── S00-S20*.md      # Detailed stage documents
 ├── examples/            # Example programs
 │   ├── basic.rs          # Basic API usage
 │   ├── streaming.rs      # Streaming responses
@@ -236,6 +308,8 @@ localcoder/
     ├── output_style.rs   # Output style loading and prompt injection
     ├── plan.rs           # Plan mode state and todo management
     ├── repl.rs           # Interactive REPL interface
+    ├── runtime.rs        # Shared runtime/bootstrap helpers
+    ├── server.rs         # Local HTTP and WebSocket server mode
     ├── session.rs        # JSONL session persistence
     ├── skills.rs         # SKILL.md loading and activation
     ├── tools/            # Built-in tools
@@ -251,6 +325,7 @@ localcoder/
 |------|----------|
 | Async runtime | tokio 1.40 |
 | HTTP client | reqwest 0.12 |
+| Local server | axum 0.8 |
 | JSON handling | serde + serde_json 1.0 |
 | Line editing | rustyline 14.0 |
 | Error handling | anyhow |
