@@ -1,6 +1,14 @@
 # Changelog
 
-<!-- last-commit: 5c6e6ad -->
+<!-- last-commit: d644473 -->
+
+## v0.1.12 - 2026-05-14
+
+| Commit | Description |
+|--------|-------------|
+| `d644473` | feat: support tab completion |
+| `6b8bc0c` | update CHANGELOG.md |
+
 
 ## v0.1.11 - 2026-05-08
 
