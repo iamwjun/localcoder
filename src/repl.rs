@@ -10,6 +10,9 @@ use crate::git;
 use crate::memory::MemoryStore;
 use crate::output_style::OutputStyleManager;
 use crate::plan::PlanManager;
+use crate::repl_completion::{
+    ReplCommandSpec, ReplHelper, build_slash_commands, is_bare_slash_input,
+};
 use crate::runtime;
 use crate::server::{self, ServerHandle};
 use crate::session::SessionStore;
@@ -20,8 +23,9 @@ use crate::tools::web_fetch::fetch_url;
 use crate::tools::web_search::search_web;
 use crate::types::ConversationHistory;
 use anyhow::{Context, Result};
-use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
+use rustyline::history::DefaultHistory;
+use rustyline::{CompletionType, Config, Editor};
 use serde_json::{Value, json};
 use std::env;
 
@@ -31,6 +35,8 @@ pub enum ResumeTarget {
     ContinueLatest,
     ResumeId(String),
 }
+
+type ReplEditor = Editor<ReplHelper, DefaultHistory>;
 
 /// Start the REPL interactive interface
 pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<()> {
@@ -54,16 +60,35 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
 
     let mut display_history = rebuild_display_history(&messages);
     let mut server_handle: Option<ServerHandle> = None;
-
-    let mut rl = DefaultEditor::new()?;
+    let mut pending_input: Option<String> = None;
+    let mut rl = build_repl_editor(skill_manager.as_ref())?;
 
     loop {
-        let readline = rl.readline(&format!("\n{} ", "💬 You >".green().bold()));
+        let slash_commands = refresh_repl_commands(&mut rl, skill_manager.as_ref());
+        let prompt = format!("\n{} ", "💬 You >".green().bold());
+        let readline = if let Some(initial) = pending_input.take() {
+            rl.readline_with_initial(&prompt, (&initial, ""))
+        } else {
+            rl.readline(&prompt)
+        };
 
         match readline {
             Ok(line) => {
                 let input = line.trim();
                 if input.is_empty() {
+                    continue;
+                }
+
+                if is_bare_slash_input(input) {
+                    match show_slash_command_picker(&mut rl, &slash_commands) {
+                        Ok(Some(selected)) => {
+                            pending_input = Some(selected);
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            eprintln!("\n{} {}", "❌ Slash picker failed:".red().bold(), e);
+                        }
+                    }
                     continue;
                 }
 
@@ -285,6 +310,74 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
     }
 
     Ok(())
+}
+
+fn build_repl_editor(skill_manager: Option<&SkillManager>) -> Result<ReplEditor> {
+    let config = Config::builder()
+        .completion_type(CompletionType::List)
+        .build();
+    let commands = build_slash_commands(skill_manager)?;
+    let mut rl = Editor::with_config(config)?;
+    rl.set_helper(Some(ReplHelper::new(commands)));
+    Ok(rl)
+}
+
+fn refresh_repl_commands(
+    rl: &mut ReplEditor,
+    skill_manager: Option<&SkillManager>,
+) -> Vec<ReplCommandSpec> {
+    let commands = match build_slash_commands(skill_manager) {
+        Ok(commands) => commands,
+        Err(err) => {
+            eprintln!(
+                "\n{} {}",
+                "⚠️ Failed to refresh slash commands:".yellow().bold(),
+                err
+            );
+            build_slash_commands(None).unwrap_or_default()
+        }
+    };
+
+    if let Some(helper) = rl.helper_mut() {
+        helper.set_commands(commands.clone());
+    }
+    commands
+}
+
+fn show_slash_command_picker(
+    rl: &mut ReplEditor,
+    commands: &[ReplCommandSpec],
+) -> Result<Option<String>> {
+    println!("\n{}", "📖 Slash commands:".cyan().bold());
+    println!(
+        "{}",
+        "Type a number to prefill the command, or press Enter to cancel.".dimmed()
+    );
+    for (index, command) in commands.iter().enumerate() {
+        println!(
+            "  {:>2}. {:<24} {}",
+            index + 1,
+            command.usage,
+            command.summary
+        );
+    }
+    println!();
+
+    let input = rl.readline(&format!("{} ", "Select command number >".cyan().bold()))?;
+    let input = input.trim();
+    if input.is_empty() {
+        println!("{}", "Slash picker cancelled".yellow());
+        return Ok(None);
+    }
+
+    let index = input
+        .parse::<usize>()
+        .context("please enter a valid command number")?;
+    if index == 0 || index > commands.len() {
+        anyhow::bail!("command number out of range");
+    }
+
+    Ok(Some(commands[index - 1].replacement()))
 }
 
 fn init_session(
@@ -880,7 +973,7 @@ async fn handle_manual_compact(
 }
 
 fn handle_config_command(
-    rl: &mut DefaultEditor,
+    rl: &mut ReplEditor,
     cwd: &std::path::Path,
     app_config: &mut AppConfig,
 ) -> Result<()> {
@@ -909,7 +1002,7 @@ fn handle_config_command(
 }
 
 fn configure_theme(
-    rl: &mut DefaultEditor,
+    rl: &mut ReplEditor,
     cwd: &std::path::Path,
     app_config: &mut AppConfig,
 ) -> Result<()> {
@@ -952,7 +1045,7 @@ fn configure_theme(
 }
 
 fn configure_tips(
-    rl: &mut DefaultEditor,
+    rl: &mut ReplEditor,
     cwd: &std::path::Path,
     app_config: &mut AppConfig,
 ) -> Result<()> {
@@ -1003,7 +1096,7 @@ fn configure_tips(
 }
 
 fn handle_resume_command(
-    rl: &mut DefaultEditor,
+    rl: &mut ReplEditor,
     cwd: &std::path::Path,
     skill_manager: Option<&SkillManager>,
     memory_store: &mut MemoryStore,
@@ -1198,7 +1291,7 @@ async fn handle_review_command(client: &LLMClient, cwd: &std::path::Path) -> Res
 }
 
 async fn handle_commit_command(
-    rl: &mut DefaultEditor,
+    rl: &mut ReplEditor,
     client: &LLMClient,
     cwd: &std::path::Path,
     title: Option<&str>,
@@ -1274,7 +1367,7 @@ async fn handle_commit_command(
     Ok(())
 }
 
-async fn select_model(rl: &mut DefaultEditor, client: &mut LLMClient) -> Result<()> {
+async fn select_model(rl: &mut ReplEditor, client: &mut LLMClient) -> Result<()> {
     let models = client.list_models().await?;
     if models.is_empty() {
         println!("\n{}", "⚠️ No models found from provider endpoint".yellow());

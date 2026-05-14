@@ -1,6 +1,6 @@
 # Claude Code 递进实现计划
 
-> 从零到完整的 Claude Code 分 19 阶段递进实现方案
+> 从零到完整的 Claude Code 分阶段递进实现方案
 >
 > 每个阶段均可**独立运行**，在上一阶段基础上叠加功能
 
@@ -31,6 +31,8 @@ S16  多平台支持   ❌    Bedrock / Vertex / Foundry    src/utils/model/prov
 S17  MCP 集成    ❌    MCP 协议客户端 + 5 种传输     src/services/mcp/
 S18  输出样式     ✅    output-styles + /output-style  src/services/loadOutputStylesDir.ts
 S19  LSP 集成    ✅     语言服务器 + 代码导航         src/services/lsp/
+S20  Server 模式 ✅     /server + HTTP/WebSocket      src/server.rs
+S21  REPL 指令面板 ❌  行首 / 弱提示 + 指令下拉      src/repl.rs
 ```
 
 ---
@@ -1749,6 +1751,22 @@ src/api.rs:45: pub async fn query_streaming(...)
 
 ---
 
+## S20 · Server 模式
+
+> 为 `localcoder` 增加本地服务端运行模式，支持 `/server` 指令、HTTP 请求和 WebSocket 会话
+
+详细方案见：`docs/S20-server.md`、`docs/S20-server-zh.md`
+
+---
+
+## S21 · REPL 指令面板
+
+> 优先增强 `repl`：当用户输入行首第一个字符为 `/` 时，提供弱提示式候选与指令下拉，降低命令记忆成本
+
+详细方案见：`docs/S21-repl-slash-menu.md`
+
+---
+
 ## 📊 阶段汇总
 
 | 阶段 | 名称 | 新增代码 | 累计代码 | 开发时间 | 完成后能做什么 |
@@ -1773,8 +1791,10 @@ src/api.rs:45: pub async fn query_streaming(...)
 | S17 | MCP 集成 | +700 行 | 5,800 行 | 7 天 | 连接外部工具和数据源 |
 | S18 | 输出样式 | +150 行 | 5,950 行 | 1 天 | 自定义 Claude 回复格式 |
 | S19 | LSP 集成 | +600 行 | 6,550 行 | 6 天 | 跳转定义 + 查找引用 |
+| S20 | Server 模式 | +450 行 | 7,000 行 | 4 天 | 本地启动 HTTP / WebSocket 服务 |
+| S21 | REPL 指令面板 | +250 行 | 7,250 行 | 2 天 | `/` 触发命令发现与补全 |
 
-**总计**: ~7,000 行 Rust 代码，约 63 天（原版: 512,000 行）
+**总计**: ~7,250 行 Rust 代码，约 69 天（原版: 512,000 行）
 
 ---
 
@@ -1792,12 +1812,14 @@ rust/src/
 ├── compact.rs           ← 上下文压缩（S08）
 ├── memory.rs            ← 记忆系统（S10）
 ├── skills.rs            ← SkillRegistry + Skill 解析（S13）
+├── server.rs            ← 本地服务模式（S20）
 ├── web.rs               ← WebFetch + WebSearch 工具（S14）
 ├── cost.rs              ← CostTracker + TokenUsage（S15）
 ├── providers.rs         ← APIProvider 枚举 + 多平台适配（S16）
 ├── output_styles.rs     ← OutputStyleRegistry（S18）
 ├── git.rs               ← Git 操作封装（S09）
 ├── repl.rs              ← REPL 界面（S00 基础）
+├── repl_completion.rs   ← REPL 斜杠命令补全（S21）
 │
 └── tools/
     ├── mod.rs           ← Tool trait + ToolRegistry（S01）

@@ -11,6 +11,7 @@ mod memory;
 mod output_style;
 mod plan;
 mod repl;
+mod repl_completion;
 mod runtime;
 mod server;
 mod services;

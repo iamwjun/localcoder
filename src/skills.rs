@@ -216,15 +216,7 @@ impl SkillManager {
     }
 
     pub fn render_user_invocable_list(&self) -> Result<String> {
-        self.reload()?;
-        let registry = self.registry.lock().expect("skill registry lock poisoned");
-        let mut skills = registry
-            .skills
-            .values()
-            .filter(|skill| skill.user_invocable)
-            .cloned()
-            .collect::<Vec<_>>();
-
+        let mut skills = self.user_invocable_skills()?;
         if skills.is_empty() {
             return Ok("(empty)".to_string());
         }
@@ -246,6 +238,17 @@ impl SkillManager {
             })
             .collect::<Vec<_>>()
             .join("\n"))
+    }
+
+    pub fn user_invocable_skills(&self) -> Result<Vec<Skill>> {
+        self.reload()?;
+        let registry = self.registry.lock().expect("skill registry lock poisoned");
+        Ok(registry
+            .skills
+            .values()
+            .filter(|skill| skill.user_invocable)
+            .cloned()
+            .collect())
     }
 
     pub fn has_user_invocable(&self, skill_name: &str) -> Result<bool> {
@@ -639,5 +642,29 @@ mod tests {
         let allowed = manager.active_allowed_tools().unwrap();
         assert!(allowed.contains("read"));
         assert!(allowed.contains("glob"));
+    }
+
+    #[test]
+    fn user_invocable_skills_filters_non_invocable_entries() {
+        let project = TempDir::new().unwrap();
+        let public_dir = project.path().join(".claude/skills/explain");
+        let hidden_dir = project.path().join(".claude/skills/internal");
+        fs::create_dir_all(&public_dir).unwrap();
+        fs::create_dir_all(&hidden_dir).unwrap();
+        fs::write(
+            public_dir.join("SKILL.md"),
+            "---\nname: explain\ndescription: Explain code\nuser-invocable: true\n---\n\nExplain it.\n",
+        )
+        .unwrap();
+        fs::write(
+            hidden_dir.join("SKILL.md"),
+            "---\nname: internal\ndescription: Internal only\nuser-invocable: false\n---\n\nNope.\n",
+        )
+        .unwrap();
+
+        let manager = SkillManager::new(project.path()).unwrap();
+        let skills = manager.user_invocable_skills().unwrap();
+        assert!(skills.iter().any(|skill| skill.name == "explain"));
+        assert!(!skills.iter().any(|skill| skill.name == "internal"));
     }
 }
