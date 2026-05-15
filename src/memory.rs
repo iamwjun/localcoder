@@ -66,7 +66,6 @@ pub struct MemoryHeader {
 
 #[derive(Debug, Clone)]
 pub struct SavedMemory {
-    pub filename: String,
     pub name: String,
     pub memory_type: MemoryType,
 }
@@ -334,7 +333,6 @@ Conversation:\n{}",
                 .with_context(|| format!("failed to write memory file: {}", path.display()))?;
 
             saved.push(SavedMemory {
-                filename,
                 name: memory.name,
                 memory_type: memory.memory_type,
             });

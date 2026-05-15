@@ -63,7 +63,6 @@ pub struct OllamaChatResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct OllamaMessage {
-    pub role: String,
     pub content: Option<String>,
     pub tool_calls: Option<Vec<OllamaToolCall>>,
 }
@@ -99,6 +98,7 @@ impl ConversationHistory {
         self.messages.push(Message::assistant(content));
     }
 
+    #[cfg(test)]
     pub fn get_messages(&self) -> &[Message] {
         &self.messages
     }

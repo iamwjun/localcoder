@@ -141,26 +141,6 @@ impl LspServerManager {
         Ok(WorkspaceSymbolBatch { results, errors })
     }
 
-    pub async fn shutdown(&self) -> Result<()> {
-        let mut state = self.state.lock().await;
-        for server in state.servers.values_mut() {
-            for document in server.documents.values() {
-                let _ = server
-                    .client
-                    .send_notification(
-                        "textDocument/didClose",
-                        json!({
-                            "textDocument": {"uri": document.uri}
-                        }),
-                    )
-                    .await;
-            }
-            server.client.shutdown().await?;
-        }
-        state.servers.clear();
-        Ok(())
-    }
-
     fn resolve_path(&self, path: &Path) -> Result<PathBuf> {
         let candidate = if path.is_absolute() {
             path.to_path_buf()

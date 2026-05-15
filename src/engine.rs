@@ -34,15 +34,6 @@ pub struct EngineOptions {
 /// `messages` is mutated in-place: the function appends assistant messages and
 /// tool_result messages as the conversation progresses, so the caller's history
 /// stays up-to-date after the call returns.
-///
-pub async fn run_agent_loop(
-    client: &LLMClient,
-    registry: &ToolRegistry,
-    messages: &mut Vec<Value>,
-) -> Result<String> {
-    run_agent_loop_with_system_prompt(client, registry, messages, None).await
-}
-
 pub async fn run_agent_loop_with_system_prompt(
     client: &LLMClient,
     registry: &ToolRegistry,

@@ -86,7 +86,6 @@ struct OpenAIChoice {
 #[derive(Debug, Deserialize)]
 struct OpenAIMessage {
     content: Option<String>,
-    tool_calls: Option<Vec<OpenAIToolCall>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,18 +115,6 @@ struct OpenAIStreamToolCall {
 struct OpenAIStreamFunctionCall {
     name: Option<String>,
     arguments: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAIToolCall {
-    id: String,
-    function: OpenAIFunctionCall,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAIFunctionCall {
-    name: String,
-    arguments: String,
 }
 
 #[derive(Debug, Default)]
@@ -728,11 +715,13 @@ impl LLMClient {
     }
 
     /// Set model.
+    #[cfg(test)]
     pub fn set_model(&mut self, model: String) {
         self.model = model;
     }
 
     /// Set max tokens.
+    #[cfg(test)]
     pub fn set_max_tokens(&mut self, max_tokens: u32) {
         self.max_tokens = max_tokens;
     }

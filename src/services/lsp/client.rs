@@ -93,13 +93,6 @@ impl LspClient {
         .with_context(|| format!("failed to send LSP notification '{}'", method))
     }
 
-    pub async fn shutdown(&mut self) -> Result<()> {
-        let _ = self.send_request("shutdown", json!(null)).await;
-        let _ = self.send_notification("exit", json!(null)).await;
-        let _ = self.child.kill().await;
-        Ok(())
-    }
-
     fn next_id(&mut self) -> u64 {
         self.request_id += 1;
         self.request_id
@@ -174,6 +167,12 @@ impl LspClient {
         )
         .await
         .with_context(|| format!("failed to respond to LSP server request '{}'", method))
+    }
+}
+
+impl Drop for LspClient {
+    fn drop(&mut self) {
+        let _ = self.child.start_kill();
     }
 }
 

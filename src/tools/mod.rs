@@ -187,15 +187,18 @@ impl ToolRegistry {
         tool.execute_boxed(input).await
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.tools.len()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
     }
 
     /// List names of registered tools (sorted).
+    #[cfg(test)]
     pub fn names(&self) -> Vec<&str> {
         let mut names: Vec<&str> = self.tools.keys().map(|s| s.as_str()).collect();
         names.sort();

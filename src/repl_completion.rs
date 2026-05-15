@@ -120,6 +120,7 @@ fn builtin_commands() -> Vec<ReplCommandSpec> {
     .collect()
 }
 
+#[cfg(test)]
 fn matching_commands(commands: &[ReplCommandSpec], prefix: &str) -> Vec<ReplCommandSpec> {
     let mut matches = commands
         .iter()
@@ -139,6 +140,7 @@ fn matching_commands(commands: &[ReplCommandSpec], prefix: &str) -> Vec<ReplComm
     matches
 }
 
+#[cfg(test)]
 fn source_weight(source: ReplCommandSource) -> u8 {
     match source {
         ReplCommandSource::Builtin => 0,

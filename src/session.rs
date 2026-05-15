@@ -275,10 +275,6 @@ fn sessions_project_dir_with_home(project_dir: &Path, home: Option<&Path>) -> Re
     Ok(localcoder_home_with_home(home)?.join("sessions").join(hash))
 }
 
-fn localcoder_home() -> Result<PathBuf> {
-    localcoder_home_with_home(std::env::var_os("HOME").as_deref().map(Path::new))
-}
-
 fn localcoder_home_with_home(home: Option<&Path>) -> Result<PathBuf> {
     let home = home.ok_or_else(|| anyhow!("$HOME is not set"))?;
     Ok(home.join(".localcoder"))

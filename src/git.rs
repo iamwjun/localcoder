@@ -48,6 +48,7 @@ pub fn get_combined_diff(cwd: &Path) -> Result<String> {
     get_working_diff(cwd)
 }
 
+#[cfg(test)]
 pub fn has_staged_changes(cwd: &Path) -> Result<bool> {
     Ok(!get_staged_diff(cwd)?.trim().is_empty())
 }
