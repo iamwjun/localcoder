@@ -31,15 +31,7 @@ use crate::terminal_style::StyleExt;
 async fn main() -> Result<()> {
     api::LLMClient::ensure_settings_file()?;
     let cwd = env::current_dir()?;
-    let client = api::LLMClient::new()?;
     let runtime = runtime::build_runtime(&cwd)?;
-
-    print_banner();
-    println!(
-        "{} {}",
-        "🤖 Using".green().bold(),
-        client.provider_name().green().bold()
-    );
 
     let args: Vec<String> = env::args().skip(1).collect();
     let (resume_target, prompt_args) = parse_args(args)?;
@@ -89,20 +81,57 @@ fn parse_args(args: Vec<String>) -> Result<(ResumeTarget, Vec<String>)> {
     Ok((resume_target, prompt_args))
 }
 
-fn print_banner() {
-    println!(
-        "{}",
-        "╔════════════════════════════════════════════════════════════╗".cyan()
-    );
-    println!(
-        "{}",
-        "║         Localcoder Minimal Version (Rust) - CLI Interface  ║".cyan()
-    );
-    println!(
-        "{}",
-        "╚════════════════════════════════════════════════════════════╝".cyan()
-    );
-    println!();
+pub(crate) fn print_banner(lines: &[String]) {
+    let title = "Localcoder".white().bold().to_string();
+    let content_width = std::iter::once(title.as_str())
+        .chain(lines.iter().map(String::as_str))
+        .map(visible_width)
+        .max()
+        .unwrap_or(0)
+        .max(44);
+    let horizontal = "─".repeat(content_width + 2);
+
+    println!("{}{}{}", "╭".dimmed(), horizontal.dimmed(), "╮".dimmed());
+    println!("{}", banner_line(&title, content_width));
+    for line in lines {
+        println!("{}", banner_line(line, content_width));
+    }
+    println!("{}{}{}", "╰".dimmed(), horizontal.dimmed(), "╯".dimmed());
+}
+
+fn banner_line(content: &str, width: usize) -> String {
+    let padding = width.saturating_sub(visible_width(content));
+    format!(
+        "{} {}{} {}",
+        "│".dimmed(),
+        content,
+        " ".repeat(padding),
+        "│".dimmed()
+    )
+}
+
+fn visible_width(text: &str) -> usize {
+    let mut width = 0;
+    let mut chars = text.chars();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            if matches!(chars.next(), Some('[')) {
+                for next in chars.by_ref() {
+                    if ('@'..='~').contains(&next) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+
+        if !matches!(ch, '\n' | '\r') && !ch.is_control() {
+            width += 1;
+        }
+    }
+
+    width
 }
 
 async fn one_shot(

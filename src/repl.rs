@@ -30,6 +30,7 @@ use std::env;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::process::{Command, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone)]
 pub enum ResumeTarget {
@@ -65,6 +66,12 @@ struct TerminalMode {
     original_state: String,
 }
 
+struct SessionInit {
+    session: Option<SessionStore>,
+    messages: Vec<Value>,
+    status: String,
+}
+
 impl TerminalMode {
     fn enter() -> io::Result<Self> {
         let original_state = run_stty_capture(["-g"])?;
@@ -96,13 +103,16 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
     let cwd = env::current_dir().context("failed to resolve current directory")?;
     let mut app_config = AppConfig::load(&cwd)?;
     let output_style_manager = OutputStyleManager::new(&cwd);
-    let (mut session, mut messages) = init_session(&cwd, resume)?;
+    let session_init = init_session(&cwd, resume)?;
+    let mut session = session_init.session;
+    let mut messages = session_init.messages;
     let mut memory_store = MemoryStore::new(&cwd, visible_message_count(&messages))?;
     let plan_manager = registry.plan_manager();
     let skill_manager = registry.skill_manager();
     if let Some(manager) = &skill_manager {
         manager.set_session_id(session.as_ref().map(|s| s.id.as_str()));
     }
+    print_startup_intro(&client, &app_config, &session_init.status);
 
     let mut display_history = rebuild_display_history(&messages);
     let mut server_handle: Option<ServerHandle> = None;
@@ -110,8 +120,8 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
 
     loop {
         refresh_repl_commands(&mut rl, skill_manager.as_ref());
-        let header_lines = build_main_prompt_lines(&client, &app_config, session.as_ref());
-        match rl.read_main_input(&header_lines) {
+        let footer_lines = build_main_prompt_footer_lines(&client);
+        match rl.read_main_input(&footer_lines) {
             Ok(PromptSignal::Submitted(line)) => {
                 let input = line.trim();
                 if input.is_empty() {
@@ -309,11 +319,9 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
                 }
             }
             Ok(PromptSignal::Interrupted) => {
-                println!("{}", "Use /exit or /quit to exit".yellow());
-                continue;
+                break;
             }
             Ok(PromptSignal::Eof) => {
-                println!("{}", "👋 Goodbye!".cyan());
                 break;
             }
             Err(err) => {
@@ -333,10 +341,10 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
 fn build_repl_editor(skill_manager: Option<&SkillManager>) -> Result<ReplEditor> {
     Ok(ReplEditor {
         slash_commands: build_slash_commands(skill_manager)?,
-        theme: InputTheme::ocean()
-            .with_background_color(TerminalColor::Ansi256(236))
-            .with_suggestion_background_color(TerminalColor::Ansi256(238))
-            .with_selected_background_color(TerminalColor::Ansi256(31)),
+        theme: InputTheme::new()
+            .with_border_color(TerminalColor::Ansi256(240))
+            .with_text_color(TerminalColor::Ansi256(255))
+            .with_background_color(TerminalColor::Ansi256(236)),
     })
 }
 
@@ -355,7 +363,7 @@ fn refresh_repl_commands(rl: &mut ReplEditor, skill_manager: Option<&SkillManage
 }
 
 impl ReplEditor {
-    fn read_main_input(&mut self, header_lines: &[String]) -> Result<PromptSignal> {
+    fn read_main_input(&mut self, footer_lines: &[String]) -> Result<PromptSignal> {
         let options = self
             .slash_commands
             .iter()
@@ -369,7 +377,8 @@ impl ReplEditor {
             })
             .collect::<Vec<_>>();
         self.run_input_session(
-            header_lines,
+            &[],
+            footer_lines,
             None,
             &options,
             SuggestionBehavior::KeepEditing,
@@ -380,6 +389,7 @@ impl ReplEditor {
         let header_lines = vec![title.to_string()];
         match self.run_input_session(
             &header_lines,
+            &[],
             Some(initial),
             &[],
             SuggestionBehavior::KeepEditing,
@@ -393,6 +403,7 @@ impl ReplEditor {
         let header_lines = vec![title.to_string()];
         match self.run_input_session(
             &header_lines,
+            &[],
             Some("/"),
             options,
             SuggestionBehavior::ReturnImmediately,
@@ -405,6 +416,7 @@ impl ReplEditor {
     fn run_input_session(
         &mut self,
         header_lines: &[String],
+        footer_lines: &[String],
         initial: Option<&str>,
         options: &[InputOption],
         suggestion_behavior: SuggestionBehavior,
@@ -423,7 +435,13 @@ impl ReplEditor {
             input.handle_paste(initial);
         }
 
-        renderer.render(&mut stdout, &input)?;
+        render_input_frame(
+            &mut renderer,
+            &mut stdout,
+            &input,
+            footer_lines,
+            terminal_columns,
+        )?;
 
         let outcome = loop {
             let Some(event) = read_event(&mut stdin)? else {
@@ -450,12 +468,37 @@ impl ReplEditor {
                 },
             }
 
-            renderer.render(&mut stdout, &input)?;
+            render_input_frame(
+                &mut renderer,
+                &mut stdout,
+                &input,
+                footer_lines,
+                terminal_columns,
+            )?;
         };
 
         renderer.clear(&mut stdout)?;
         Ok(outcome)
     }
+}
+
+fn render_input_frame<W: Write>(
+    renderer: &mut InputRenderer,
+    output: &mut W,
+    input: &SlashInput,
+    footer_lines: &[String],
+    terminal_columns: usize,
+) -> io::Result<()> {
+    let mut view = input.render_with_terminal_width(terminal_columns);
+    view.lines.insert(0, String::new());
+    view.cursor_row += 1;
+
+    if footer_lines.is_empty() || input.is_dropdown_visible() {
+        return renderer.render_view(output, &view);
+    }
+
+    view.lines.extend(footer_lines.iter().cloned());
+    renderer.render_view(output, &view)
 }
 
 fn trim_selection_value(value: &str) -> String {
@@ -716,38 +759,38 @@ fn open_tty_writer() -> io::Result<File> {
     OpenOptions::new().read(true).write(true).open("/dev/tty")
 }
 
-fn init_session(
-    cwd: &std::path::Path,
-    resume: ResumeTarget,
-) -> Result<(Option<SessionStore>, Vec<Value>)> {
+fn init_session(cwd: &std::path::Path, resume: ResumeTarget) -> Result<SessionInit> {
     match resume {
-        ResumeTarget::New => Ok((None, Vec::new())),
+        ResumeTarget::New => Ok(SessionInit {
+            session: None,
+            messages: Vec::new(),
+            status: "new conversation".to_string(),
+        }),
         ResumeTarget::ContinueLatest => {
             if let Some(store) = SessionStore::load_latest(cwd)? {
                 let messages = store.load_messages()?;
-                println!(
-                    "{} {}",
-                    "🔄 Resumed latest session:".cyan().bold(),
-                    store.id.as_str().white()
-                );
-                Ok((Some(store), messages))
+                let status = format!("continued {}", store.id);
+                Ok(SessionInit {
+                    session: Some(store),
+                    messages,
+                    status,
+                })
             } else {
-                println!(
-                    "{}",
-                    "ℹ️ No previous session found; session will start on first message".yellow()
-                );
-                Ok((None, Vec::new()))
+                Ok(SessionInit {
+                    session: None,
+                    messages: Vec::new(),
+                    status: "new conversation (no previous session found)".to_string(),
+                })
             }
         }
         ResumeTarget::ResumeId(id) => {
             let store = SessionStore::load(cwd, &id)?;
             let messages = store.load_messages()?;
-            println!(
-                "{} {}",
-                "🔄 Resumed session:".cyan().bold(),
-                id.as_str().white()
-            );
-            Ok((Some(store), messages))
+            Ok(SessionInit {
+                session: Some(store),
+                messages,
+                status: format!("resumed {}", id),
+            })
         }
     }
 }
@@ -775,51 +818,51 @@ fn visible_message_count(messages: &[Value]) -> usize {
         .count()
 }
 
-fn build_main_prompt_lines(
-    client: &LLMClient,
-    app_config: &AppConfig,
-    session: Option<&SessionStore>,
-) -> Vec<String> {
-    let session_line = match session {
-        Some(store) => format!(
-            "{} {}",
-            "🧾 Session:".cyan().bold(),
-            store.id.as_str().white()
-        ),
-        None => format!("{}", "🧾 Session: (not started yet)".cyan().bold()),
-    };
-
-    vec![
-        session_line,
-        format!("{} {}", "🔧 Model:".cyan().bold(), client.model().white()),
+fn print_startup_intro(client: &LLMClient, app_config: &AppConfig, session_status: &str) {
+    crate::print_banner(&[
+        format!("{} {}", "session".dimmed(), session_status.white()),
         format!(
-            "{} theme={} tips={}",
-            "⚙️  UI:".cyan().bold(),
+            "{} theme={} output={}",
+            "ui".dimmed(),
             app_config.theme.to_string().white(),
-            if app_config.tips {
-                "on".green()
-            } else {
-                "off".red()
-            }
-        ),
-        format!(
-            "{} {}",
-            "🎯 Output Style:".cyan().bold(),
             app_config.output_style.white()
         ),
-        format!(
-            "{} {}",
-            "🌐 Endpoint:".cyan().bold(),
-            client.base_url().white()
-        ),
-        String::new(),
-    ]
+        format!("{} {}", "endpoint".dimmed(), client.base_url().white()),
+    ]);
+
+    if app_config.tips {
+        print_startup_tip();
+    }
+}
+
+fn print_startup_tip() {
+    const STARTUP_TIPS: &[&str] = &[
+        "Enter submits the current message",
+        "Type / to open slash commands",
+        "/resume switches to a saved conversation",
+        "/help shows all commands",
+    ];
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let index = (nanos % STARTUP_TIPS.len() as u128) as usize;
+    println!("{} {}", "tip".dimmed(), STARTUP_TIPS[index].white());
+}
+
+fn build_main_prompt_footer_lines(client: &LLMClient) -> Vec<String> {
+    vec![format!(
+        "{} {}  {} {}",
+        "llm".dimmed(),
+        client.provider_name().white(),
+        "model".dimmed(),
+        client.model().white()
+    )]
 }
 
 async fn handle_command(command: &str, history: &mut ConversationHistory) -> bool {
     match command.to_lowercase().as_str() {
         "/exit" | "/quit" => {
-            println!("\n{}", "👋 Goodbye!".cyan());
             return true;
         }
         "/clear" => {
@@ -1379,7 +1422,7 @@ fn handle_resume_command(
 ) -> Result<()> {
     let sessions = SessionStore::list(cwd)?;
     if sessions.is_empty() {
-        println!("\n{}", "ℹ️ No saved sessions for current project".yellow());
+        println!("\n{}", "No saved sessions for current project".dimmed());
         return Ok(());
     }
 
@@ -1392,7 +1435,7 @@ fn handle_resume_command(
         })
         .collect::<Vec<_>>();
 
-    let Some(selected_id) = rl.select_option("📚 Resume Session", &options)? else {
+    let Some(selected_id) = rl.select_option("Resume Session", &options)? else {
         println!("{}", "Resume cancelled".yellow());
         return Ok(());
     };
@@ -1414,7 +1457,7 @@ fn handle_resume_command(
 
     println!(
         "{} {}",
-        "🔄 Resumed session:".green().bold(),
+        "session resumed".white().bold(),
         session
             .as_ref()
             .map(|s| s.id.as_str())
@@ -1459,7 +1502,7 @@ fn ensure_session_started(cwd: &std::path::Path, session: &mut Option<SessionSto
         let created = SessionStore::create(cwd)?;
         println!(
             "{} {}",
-            "🧾 Session started:".cyan().bold(),
+            "session started".white().bold(),
             created.id.as_str().white()
         );
         *session = Some(created);
@@ -1468,7 +1511,7 @@ fn ensure_session_started(cwd: &std::path::Path, session: &mut Option<SessionSto
 }
 
 fn print_loaded_history(messages: &[Value]) {
-    println!("\n{}", "📜 Loaded conversation history:".cyan().bold());
+    println!("\n{}", "Loaded conversation history".white().bold());
     if messages.is_empty() {
         println!("  {}", "(empty)".dimmed());
         return;
