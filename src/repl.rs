@@ -25,9 +25,11 @@ use oxink::input::{
     InputAction, InputOption, InputRenderer, InputTheme, KeyCode, KeyEvent, SlashInput,
     TerminalColor,
 };
+use oxink::styles::ANSI_STYLES;
 use serde_json::{Value, json};
 use std::env;
 use std::fs::{File, OpenOptions};
+use std::hash::BuildHasher;
 use std::io::{self, Read, Write};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -490,8 +492,6 @@ fn render_input_frame<W: Write>(
     terminal_columns: usize,
 ) -> io::Result<()> {
     let mut view = input.render_with_terminal_width(terminal_columns);
-    view.lines.insert(0, String::new());
-    view.cursor_row += 1;
 
     if footer_lines.is_empty() || input.is_dropdown_visible() {
         return renderer.render_view(output, &view);
@@ -842,12 +842,23 @@ fn print_startup_tip() {
         "/resume switches to a saved conversation",
         "/help shows all commands",
     ];
+    let index = choose_startup_tip_index(STARTUP_TIPS.len());
+    println!("{} {}", "tip".dimmed(), STARTUP_TIPS[index].white());
+    println!();
+}
+
+fn choose_startup_tip_index(len: usize) -> usize {
+    if len <= 1 {
+        return 0;
+    }
+
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let index = (nanos % STARTUP_TIPS.len() as u128) as usize;
-    println!("{} {}", "tip".dimmed(), STARTUP_TIPS[index].white());
+    let seed =
+        std::collections::hash_map::RandomState::new().hash_one((nanos, std::process::id(), len));
+    (seed as usize) % len
 }
 
 fn build_main_prompt_footer_lines(client: &LLMClient) -> Vec<String> {
@@ -1512,24 +1523,123 @@ fn ensure_session_started(cwd: &std::path::Path, session: &mut Option<SessionSto
 
 fn print_loaded_history(messages: &[Value]) {
     println!("\n{}", "Loaded conversation history".white().bold());
+    println!();
     if messages.is_empty() {
-        println!("  {}", "(empty)".dimmed());
+        println!("{}", "(empty)".dimmed());
         return;
     }
 
+    let card_width = terminal_columns().saturating_sub(1).max(20);
+    let text_width = card_width.saturating_sub(4).max(16);
     for msg in messages {
         let role = msg["role"].as_str().unwrap_or("unknown");
         let content = msg["content"].as_str().unwrap_or_default();
         match role {
-            "user" => println!("  {} {}", "You:".green().bold(), content),
-            "assistant" => println!("  {} {}", "Assistant:".blue().bold(), content),
+            "user" => print_loaded_user_message(content, card_width),
+            "assistant" => print_loaded_assistant_message(content, text_width),
             "tool" => println!(
-                "  {} {}",
-                "Tool:".yellow().bold(),
+                "{} {}",
+                "[tool]".dimmed(),
                 msg["tool_name"].as_str().unwrap_or("unknown")
             ),
             _ => {}
         }
+    }
+}
+
+fn print_loaded_user_message(content: &str, card_width: usize) {
+    let card_width = card_width.max(6);
+    let content_width = card_width.saturating_sub(4).max(1);
+    let lines = wrap_message_lines(content, content_width);
+    let blank = gray_message_surface(&" ".repeat(card_width));
+
+    println!("{blank}");
+    for line in lines {
+        let padding = content_width.saturating_sub(text_display_width(&line));
+        let padded = format!("  {}{}  ", line, " ".repeat(padding));
+        println!("{}", gray_message_surface(&padded));
+    }
+    println!("{blank}");
+    println!();
+}
+
+fn print_loaded_assistant_message(content: &str, max_width: usize) {
+    for line in wrap_message_lines(content, max_width) {
+        println!("{}", line);
+    }
+    println!();
+}
+
+fn gray_message_surface(content: &str) -> String {
+    format!(
+        "{}{}{}{}{}",
+        ANSI_STYLES.bg_color.ansi256(236),
+        ANSI_STYLES.color.ansi256(255),
+        content,
+        ANSI_STYLES.color.close,
+        ANSI_STYLES.bg_color.close
+    )
+}
+
+fn wrap_message_lines(content: &str, max_width: usize) -> Vec<String> {
+    let max_width = max_width.max(1);
+    let mut wrapped = Vec::new();
+
+    for raw_line in content.lines() {
+        if raw_line.is_empty() {
+            wrapped.push(String::new());
+            continue;
+        }
+
+        let mut current = String::new();
+        let mut current_width = 0usize;
+        for ch in raw_line.chars() {
+            let ch_width = char_display_width(ch);
+            if current_width > 0 && current_width + ch_width > max_width {
+                wrapped.push(current);
+                current = String::new();
+                current_width = 0;
+            }
+            current.push(ch);
+            current_width += ch_width;
+        }
+        wrapped.push(current);
+    }
+
+    if wrapped.is_empty() {
+        wrapped.push(String::new());
+    }
+
+    wrapped
+}
+
+fn text_display_width(text: &str) -> usize {
+    text.chars().map(char_display_width).sum()
+}
+
+fn char_display_width(ch: char) -> usize {
+    if ch.is_control() {
+        return 0;
+    }
+
+    if matches!(
+        ch,
+        '\u{1100}'..='\u{115F}'
+            | '\u{2329}'..='\u{232A}'
+            | '\u{2E80}'..='\u{A4CF}'
+            | '\u{AC00}'..='\u{D7A3}'
+            | '\u{F900}'..='\u{FAFF}'
+            | '\u{FE10}'..='\u{FE19}'
+            | '\u{FE30}'..='\u{FE6F}'
+            | '\u{FF00}'..='\u{FF60}'
+            | '\u{FFE0}'..='\u{FFE6}'
+            | '\u{1F300}'..='\u{1FAFF}'
+            | '\u{20000}'..='\u{2FFFD}'
+            | '\u{30000}'..='\u{3FFFD}'
+    ) {
+        2
+    } else {
+        1
     }
 }
 
@@ -1848,5 +1958,15 @@ mod tests {
         let fitted = fit_options_to_terminal(&options, 30);
         assert_eq!(fitted[0].command, "commit");
         assert_eq!(fitted[0].description, "/commit [title]...");
+    }
+
+    #[test]
+    fn choose_startup_tip_index_stays_in_range() {
+        assert_eq!(choose_startup_tip_index(0), 0);
+        assert_eq!(choose_startup_tip_index(1), 0);
+
+        for _ in 0..32 {
+            assert!(choose_startup_tip_index(4) < 4);
+        }
     }
 }

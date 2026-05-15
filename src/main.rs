@@ -83,16 +83,27 @@ fn parse_args(args: Vec<String>) -> Result<(ResumeTarget, Vec<String>)> {
 
 pub(crate) fn print_banner(lines: &[String]) {
     let title = "Localcoder".white().bold().to_string();
+    let version = format!("v{}", env!("CARGO_PKG_VERSION"))
+        .dimmed()
+        .to_string();
+    let subtitle = "Terminal coding assistant for local projects"
+        .dimmed()
+        .to_string();
+    let header_width = visible_width(&title) + visible_width(&version) + 2;
     let content_width = std::iter::once(title.as_str())
+        .chain(std::iter::once(subtitle.as_str()))
         .chain(lines.iter().map(String::as_str))
         .map(visible_width)
         .max()
         .unwrap_or(0)
-        .max(44);
+        .max(header_width)
+        .max(58);
     let horizontal = "─".repeat(content_width + 2);
 
     println!("{}{}{}", "╭".dimmed(), horizontal.dimmed(), "╮".dimmed());
-    println!("{}", banner_line(&title, content_width));
+    println!("{}", banner_line_lr(&title, &version, content_width));
+    println!("{}", banner_line(&subtitle, content_width));
+    println!("{}", banner_rule_line(content_width));
     for line in lines {
         println!("{}", banner_line(line, content_width));
     }
@@ -108,6 +119,24 @@ fn banner_line(content: &str, width: usize) -> String {
         " ".repeat(padding),
         "│".dimmed()
     )
+}
+
+fn banner_line_lr(left: &str, right: &str, width: usize) -> String {
+    let left_width = visible_width(left);
+    let right_width = visible_width(right);
+    let gap = width.saturating_sub(left_width + right_width).max(2);
+    format!(
+        "{} {}{}{} {}",
+        "│".dimmed(),
+        left,
+        " ".repeat(gap),
+        right,
+        "│".dimmed()
+    )
+}
+
+fn banner_rule_line(width: usize) -> String {
+    banner_line(&"─".repeat(width).dimmed().to_string(), width)
 }
 
 fn visible_width(text: &str) -> usize {
