@@ -6,11 +6,11 @@
 
 ## 📖 简介
 
-Localcoder 是一个基于 Rust 实现的 Claude-like 命令行 AI 助手，当前实现已经包括：
+Localcoder 是一个基于 Rust 实现、以本地优先为主的命令行编码助手，当前已经包括：
 
-- ✅ 基于 Ollama 的对话、流式响应和单次查询模式
+- ✅ 面向 Ollama、OpenAI 兼容接口和 LM Studio 的流式对话与单次查询
 - ✅ 文件、搜索、Bash、Web、LSP 等工具调用运行时
-- ✅ 带模型切换、会话恢复、配置菜单和输出风格的交互式 REPL
+- ✅ 基于 `oxink` 输入组件的交互式 REPL，支持模型切换、会话恢复、配置菜单和输出风格
 - ✅ 本地 Server 模式，支持 HTTP 和 WebSocket 入口
 - ✅ 上下文压缩、Git 工作流、记忆提取、计划模式和技能系统
 - ✅ 轻量级（启动快、内存占用低）
@@ -73,9 +73,73 @@ cargo build --release
 
 ---
 
-### 2. 启动 Ollama
+### 2. 配置 Provider
 
-确保本地 Ollama 服务已经启动，并且至少拉取了一个模型：
+首次启动时，Localcoder 会确保 `$HOME/.localcoder/settings.json` 存在。
+
+LLM 配置从这个 home 级配置文件读取。示例：
+
+**Ollama**
+
+```json
+{
+  "llm": {
+    "type": "ollama",
+    "base_url": "http://localhost:11434",
+    "model": "qwen3.5:4b"
+  }
+}
+```
+
+**LM Studio**
+
+```json
+{
+  "llm": {
+    "type": "lmstudio",
+    "base_url": "http://localhost:1234",
+    "model": "qwen/qwen3-coder-30b"
+  }
+}
+```
+
+**OpenAI 兼容服务**
+
+```json
+{
+  "llm": {
+    "type": "openai",
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "sk-...",
+    "model": "gpt-4o-mini"
+  }
+}
+```
+
+项目内也可以放 `.localcoder/settings.json` 做局部覆盖。当前这一路径尤其适合放 `ui` 和 `lsp` 配置：
+
+```json
+{
+  "ui": {
+    "theme": "default",
+    "tips": true,
+    "output_style": "default"
+  },
+  "lsp": {
+    "enabled": true,
+    "servers": [
+      {
+        "name": "rust-analyzer",
+        "command": "rust-analyzer",
+        "extensions": [".rs"],
+        "language_id": "rust"
+      }
+    ]
+  }
+}
+```
+
+如果你使用 Ollama，请确保本地服务已经启动，并且至少拉取了一个模型：
 
 ```bash
 ollama serve
@@ -91,50 +155,9 @@ ollama pull qwen3.5:4b
 localcoder
 ```
 
-程序启动时会自动检查配置文件：
+启动时，REPL 会显示一个紧凑的 banner，包含会话状态、UI 状态和当前 endpoint。启用 tips 时，还会随机显示一条启动提示；当前激活的 `llm` / `model` 会显示在输入框下方。
 
-- 优先读取当前目录的 `.localcoder/settings.json`
-- 如果当前目录没有，则读取 `$HOME/.localcoder/settings.json`
-- 如果两处都没有，则在 `$HOME/.localcoder/settings.json` 自动创建默认配置
-
-默认配置格式如下：
-
-```json
-{
-  "llm": {
-    "type": "ollama",
-    "base_url": "http://localhost:11434",
-    "model": "qwen3.5:4b"
-  }
-}
-```
-
-`llm.type` 用于选择提供商：`ollama`、`lmstudio`、`openai`。
-
-```json
-{
-  "llm": {
-    "type": "lmstudio",
-    "base_url": "http://localhost:1234",
-    "model": "qwen/qwen3-coder-30b"
-  }
-}
-```
-
-对于 OpenAI 兼容服务：
-
-```json
-{
-  "llm": {
-    "type": "openai",
-    "base_url": "https://api.openai.com/v1",
-    "api_key": "sk-...",
-    "model": "gpt-4o-mini"
-  }
-}
-```
-
-你也可以手动编辑这个文件，或在 REPL 中使用 `/model` 指令切换模型。
+你可以手动编辑 `$HOME/.localcoder/settings.json`，也可以在 REPL 中使用 `/model` 切换模型。
 
 ---
 
@@ -159,6 +182,13 @@ localcoder -- "/server"
 # 使用自定义地址启动本地服务
 localcoder -- "/server 127.0.0.1:4000"
 ```
+
+一些有用的交互细节：
+
+- `Ctrl-C`、`Ctrl-D`、`/exit`、`/quit` 都可以退出主 REPL
+- `/resume` 会打开会话选择器，并重新渲染已加载的历史对话
+- `/config` 用来管理主题和启动提示开关
+- `/output-style` 可以切换当前回复风格，而不用手改 JSON
 
 ---
 
@@ -271,7 +301,7 @@ localcoder -- "抓取 https://www.rust-lang.org/"
 | `/help` | 显示可用命令列表 |
 | `/clear` | 清空对话历史 |
 | `/history` | 查看对话历史（JSON 格式） |
-| `/model` | 从 `/api/tags` 获取模型列表并切换当前模型，同时更新 `$HOME/.localcoder/settings.json` |
+| `/model` | 从当前 provider 的模型接口获取列表并切换当前模型，同时更新 `$HOME/.localcoder/settings.json` |
 | `/count` | 显示消息数量 |
 | `/version` | 显示当前版本 |
 | `/quit` | 退出 REPL |
@@ -299,7 +329,7 @@ localcoder/
 │   └── error_handling.rs # 错误处理
 └── src/                 # 源代码
     ├── main.rs           # 程序入口
-    ├── api.rs            # Ollama 客户端与流式请求
+    ├── api.rs            # 多 provider 客户端与流式请求
     ├── compact.rs        # 上下文压缩
     ├── config.rs         # REPL/UI 配置加载与持久化
     ├── engine.rs         # Agent 循环与工具分发
@@ -327,9 +357,9 @@ localcoder/
 | HTTP 客户端 | reqwest 0.12 |
 | 本地服务 | axum 0.8 |
 | JSON 处理 | serde + serde_json 1.0 |
-| 命令行编辑 | rustyline 14.0 |
+| Prompt / 输入 UI | oxink 0.1.5 |
 | 错误处理 | anyhow |
-| 终端彩色 | oxink 0.1.1 |
+| 语言工具 | 内置 LSP manager + 外部语言服务器 |
 
 ---
 
@@ -350,8 +380,8 @@ localcoder/
 1. **Rust 异步编程** - tokio 运行时、async/await、Stream 处理
 2. **HTTP 客户端** - reqwest、JSON API 调用
 3. **系统编程** - 错误处理、所有权、类型安全
-4. **CLI 开发** - rustyline REPL、命令行参数
-5. **Ollama 集成** - `/api/chat`、`/api/tags`、模型配置管理
+4. **CLI 开发** - 终端交互体验、prompt 渲染、命令行工作流
+5. **Provider 集成** - Ollama、OpenAI 兼容接口、LM Studio 的模型管理
 
 ---
 

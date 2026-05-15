@@ -1,6 +1,17 @@
 # Changelog
 
-<!-- last-commit: d644473 -->
+<!-- last-commit: 1ae2ca3 -->
+
+## v0.1.13 - 2026-05-15
+
+| Commit | Description |
+|--------|-------------|
+| `1ae2ca3` | chore: fix warning code |
+| `50ffd51` | chore: optimize dialogue rendering |
+| `18e436e` | chore: optimize details |
+| `78288a4` | feat: use oxink input |
+| `a01431e` | update CHANGELOG.md |
+
 
 ## v0.1.12 - 2026-05-14
 

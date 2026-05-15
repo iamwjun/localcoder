@@ -6,11 +6,11 @@ Chinese version: [README.zh.md](./README.zh.md)
 
 ## 📖 Overview
 
-Localcoder is a Claude-like command-line AI assistant implemented in Rust. The current implementation already includes:
+Localcoder is a local-first command-line coding assistant implemented in Rust. It already includes:
 
-- ✅ Ollama-backed chat with streaming responses and one-shot mode
+- ✅ Streaming chat and one-shot execution for Ollama, OpenAI-compatible APIs, and LM Studio
 - ✅ Tool calling runtime with file, search, Bash, web, and LSP tools
-- ✅ Interactive REPL with model switching, session resume, config UI, and output styles
+- ✅ Interactive REPL with `oxink` input, model switching, session resume, config UI, and output styles
 - ✅ Local server mode with HTTP and WebSocket entrypoints
 - ✅ Context compaction, git workflows, memory extraction, plan mode, and skills
 - ✅ Lightweight runtime with fast startup and low memory usage
@@ -73,9 +73,73 @@ cargo build --release
 
 ---
 
-### 2. Start Ollama
+### 2. Configure a Provider
 
-Make sure your local Ollama service is running and that at least one model has been pulled:
+On first launch, Localcoder ensures that `$HOME/.localcoder/settings.json` exists.
+
+LLM settings are loaded from that home-level file. Example configurations:
+
+**Ollama**
+
+```json
+{
+  "llm": {
+    "type": "ollama",
+    "base_url": "http://localhost:11434",
+    "model": "qwen3.5:4b"
+  }
+}
+```
+
+**LM Studio**
+
+```json
+{
+  "llm": {
+    "type": "lmstudio",
+    "base_url": "http://localhost:1234",
+    "model": "qwen/qwen3-coder-30b"
+  }
+}
+```
+
+**OpenAI-compatible**
+
+```json
+{
+  "llm": {
+    "type": "openai",
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "sk-...",
+    "model": "gpt-4o-mini"
+  }
+}
+```
+
+Optional project-local overrides can live in `.localcoder/settings.json`. Today that path is especially useful for UI and LSP settings:
+
+```json
+{
+  "ui": {
+    "theme": "default",
+    "tips": true,
+    "output_style": "default"
+  },
+  "lsp": {
+    "enabled": true,
+    "servers": [
+      {
+        "name": "rust-analyzer",
+        "command": "rust-analyzer",
+        "extensions": [".rs"],
+        "language_id": "rust"
+      }
+    ]
+  }
+}
+```
+
+If you use Ollama, make sure the local service is running and that at least one model has been pulled:
 
 ```bash
 ollama serve
@@ -91,50 +155,9 @@ ollama pull qwen3.5:4b
 localcoder
 ```
 
-On startup, Localcoder automatically checks for a settings file:
+On startup the REPL shows a compact banner with session status, UI state, and active endpoint. When tips are enabled it also prints one random startup tip, and the active `llm` / `model` is rendered below the input box.
 
-- It first looks for `.localcoder/settings.json` in the current directory
-- If that file does not exist, it falls back to `$HOME/.localcoder/settings.json`
-- If neither exists, it creates a default config in `$HOME/.localcoder/settings.json`
-
-The default config format is:
-
-```json
-{
-  "llm": {
-    "type": "ollama",
-    "base_url": "http://localhost:11434",
-    "model": "qwen3.5:4b"
-  }
-}
-```
-
-`llm.type` selects the provider: `ollama`, `lmstudio`, or `openai`.
-
-```json
-{
-  "llm": {
-    "type": "lmstudio",
-    "base_url": "http://localhost:1234",
-    "model": "qwen/qwen3-coder-30b"
-  }
-}
-```
-
-For OpenAI-compatible services:
-
-```json
-{
-  "llm": {
-    "type": "openai",
-    "base_url": "https://api.openai.com/v1",
-    "api_key": "sk-...",
-    "model": "gpt-4o-mini"
-  }
-}
-```
-
-You can edit this file manually, or switch models from the REPL with the `/model` command.
+You can edit `$HOME/.localcoder/settings.json` manually, or switch models from the REPL with `/model`.
 
 ---
 
@@ -159,6 +182,13 @@ localcoder -- "/server"
 # Start the local server on a custom address
 localcoder -- "/server 127.0.0.1:4000"
 ```
+
+Useful interaction details:
+
+- `Ctrl-C`, `Ctrl-D`, `/exit`, and `/quit` all leave the main REPL
+- `/resume` opens a session picker and re-renders the loaded conversation history
+- `/config` manages theme and startup tip visibility
+- `/output-style` switches the active response style without editing JSON by hand
 
 ---
 
@@ -271,7 +301,7 @@ localcoder -- "Fetch https://www.rust-lang.org/"
 | `/help` | Show the available commands |
 | `/clear` | Clear conversation history |
 | `/history` | Show conversation history in JSON format |
-| `/model` | Fetch models from `/api/tags`, switch the active model, and update `$HOME/.localcoder/settings.json` |
+| `/model` | Fetch models from the active provider endpoint, switch the active model, and update `$HOME/.localcoder/settings.json` |
 | `/count` | Show the message count |
 | `/version` | Show the current version |
 | `/quit` | Exit the REPL |
@@ -299,7 +329,7 @@ localcoder/
 │   └── error_handling.rs # Error handling
 └── src/                 # Source code
     ├── main.rs           # Program entry point
-    ├── api.rs            # Ollama client and streaming requests
+    ├── api.rs            # Provider clients and streaming requests
     ├── compact.rs        # Context compaction
     ├── config.rs         # REPL/UI config loading and persistence
     ├── engine.rs         # Agent loop and tool dispatch
@@ -327,9 +357,9 @@ localcoder/
 | HTTP client | reqwest 0.12 |
 | Local server | axum 0.8 |
 | JSON handling | serde + serde_json 1.0 |
-| Line editing | rustyline 14.0 |
+| Prompt/input UI | oxink 0.1.5 |
 | Error handling | anyhow |
-| Terminal colors | oxink 0.1.1 |
+| Language tooling | built-in LSP manager + external language servers |
 
 ---
 
@@ -350,8 +380,8 @@ This project is useful for learning:
 1. **Async Rust**: tokio, async/await, and stream handling
 2. **HTTP clients**: reqwest and JSON-based APIs
 3. **Systems programming**: error handling, ownership, and type safety
-4. **CLI development**: rustyline REPL and command-line workflows
-5. **Ollama integration**: `/api/chat`, `/api/tags`, and model configuration management
+4. **CLI development**: terminal UX, prompt rendering, and command-line workflows
+5. **Provider integration**: Ollama, OpenAI-compatible APIs, and LM Studio model management
 
 ---
 
