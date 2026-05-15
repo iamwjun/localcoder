@@ -10,9 +10,7 @@ use crate::git;
 use crate::memory::MemoryStore;
 use crate::output_style::OutputStyleManager;
 use crate::plan::PlanManager;
-use crate::repl_completion::{
-    ReplCommandSpec, ReplHelper, build_slash_commands, is_bare_slash_input,
-};
+use crate::repl_completion::{ReplCommandSpec, build_slash_commands};
 use crate::runtime;
 use crate::server::{self, ServerHandle};
 use crate::session::SessionStore;
@@ -23,11 +21,15 @@ use crate::tools::web_fetch::fetch_url;
 use crate::tools::web_search::search_web;
 use crate::types::ConversationHistory;
 use anyhow::{Context, Result};
-use rustyline::error::ReadlineError;
-use rustyline::history::DefaultHistory;
-use rustyline::{CompletionType, Config, Editor};
+use oxink::input::{
+    InputAction, InputOption, InputRenderer, InputTheme, KeyCode, KeyEvent, SlashInput,
+    TerminalColor,
+};
 use serde_json::{Value, json};
 use std::env;
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read, Write};
+use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone)]
 pub enum ResumeTarget {
@@ -36,7 +38,57 @@ pub enum ResumeTarget {
     ResumeId(String),
 }
 
-type ReplEditor = Editor<ReplHelper, DefaultHistory>;
+struct ReplEditor {
+    slash_commands: Vec<ReplCommandSpec>,
+    theme: InputTheme,
+}
+
+enum PromptSignal {
+    Submitted(String),
+    Interrupted,
+    Eof,
+}
+
+#[derive(Clone, Copy)]
+enum SuggestionBehavior {
+    KeepEditing,
+    ReturnImmediately,
+}
+
+enum AppEvent {
+    Interrupted,
+    Eof,
+    Key(KeyEvent),
+}
+
+struct TerminalMode {
+    original_state: String,
+}
+
+impl TerminalMode {
+    fn enter() -> io::Result<Self> {
+        let original_state = run_stty_capture(["-g"])?;
+        run_stty(["raw", "-echo"])?;
+
+        let mut tty = open_tty_writer()?;
+        write!(tty, "\x1B[?25h")?;
+        tty.flush()?;
+
+        Ok(Self {
+            original_state: original_state.trim().to_string(),
+        })
+    }
+}
+
+impl Drop for TerminalMode {
+    fn drop(&mut self) {
+        let _ = run_stty([self.original_state.as_str()]);
+        if let Ok(mut tty) = open_tty_writer() {
+            let _ = write!(tty, "\x1B[?25h");
+            let _ = tty.flush();
+        }
+    }
+}
 
 /// Start the REPL interactive interface
 pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<()> {
@@ -44,7 +96,6 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
     let cwd = env::current_dir().context("failed to resolve current directory")?;
     let mut app_config = AppConfig::load(&cwd)?;
     let output_style_manager = OutputStyleManager::new(&cwd);
-    print_instructions(&client, &app_config);
     let (mut session, mut messages) = init_session(&cwd, resume)?;
     let mut memory_store = MemoryStore::new(&cwd, visible_message_count(&messages))?;
     let plan_manager = registry.plan_manager();
@@ -52,47 +103,20 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
     if let Some(manager) = &skill_manager {
         manager.set_session_id(session.as_ref().map(|s| s.id.as_str()));
     }
-    if let Some(s) = &session {
-        println!("{} {}", "🧾 Session:".cyan().bold(), s.id.as_str().white());
-    } else {
-        println!("{}", "🧾 Session: (not started yet)".cyan().bold());
-    }
 
     let mut display_history = rebuild_display_history(&messages);
     let mut server_handle: Option<ServerHandle> = None;
-    let mut pending_input: Option<String> = None;
     let mut rl = build_repl_editor(skill_manager.as_ref())?;
 
     loop {
-        let slash_commands = refresh_repl_commands(&mut rl, skill_manager.as_ref());
-        let prompt = format!("\n{} ", "💬 You >".green().bold());
-        let readline = if let Some(initial) = pending_input.take() {
-            rl.readline_with_initial(&prompt, (&initial, ""))
-        } else {
-            rl.readline(&prompt)
-        };
-
-        match readline {
-            Ok(line) => {
+        refresh_repl_commands(&mut rl, skill_manager.as_ref());
+        let header_lines = build_main_prompt_lines(&client, &app_config, session.as_ref());
+        match rl.read_main_input(&header_lines) {
+            Ok(PromptSignal::Submitted(line)) => {
                 let input = line.trim();
                 if input.is_empty() {
                     continue;
                 }
-
-                if is_bare_slash_input(input) {
-                    match show_slash_command_picker(&mut rl, &slash_commands) {
-                        Ok(Some(selected)) => {
-                            pending_input = Some(selected);
-                        }
-                        Ok(None) => {}
-                        Err(e) => {
-                            eprintln!("\n{} {}", "❌ Slash picker failed:".red().bold(), e);
-                        }
-                    }
-                    continue;
-                }
-
-                let _ = rl.add_history_entry(input);
 
                 if input.starts_with('/') {
                     if command_arg(input, "/resume").is_some() {
@@ -120,8 +144,6 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
                     if command_arg(input, "/config").is_some() {
                         if let Err(e) = handle_config_command(&mut rl, &cwd, &mut app_config) {
                             eprintln!("\n{} {}", "❌ Config failed:".red().bold(), e);
-                        } else {
-                            print_instructions(&client, &app_config);
                         }
                         continue;
                     }
@@ -177,11 +199,7 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
                             &mut app_config,
                             style_name,
                         ) {
-                            Ok(changed) => {
-                                if changed {
-                                    print_instructions(&client, &app_config);
-                                }
-                            }
+                            Ok(_changed) => {}
                             Err(e) => {
                                 eprintln!("\n{} {}", "❌ Output style failed:".red().bold(), e);
                             }
@@ -290,16 +308,16 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
                     eprintln!("\n{} {}", "❌ Error:".red().bold(), e);
                 }
             }
-            Err(ReadlineError::Interrupted) => {
-                println!("\n{}", "Use /exit or /quit to exit".yellow());
+            Ok(PromptSignal::Interrupted) => {
+                println!("{}", "Use /exit or /quit to exit".yellow());
                 continue;
             }
-            Err(ReadlineError::Eof) => {
-                println!("\n{}", "👋 Goodbye!".cyan());
+            Ok(PromptSignal::Eof) => {
+                println!("{}", "👋 Goodbye!".cyan());
                 break;
             }
             Err(err) => {
-                eprintln!("{} {:?}", "❌ Error reading input:".red().bold(), err);
+                eprintln!("{} {}", "❌ Error reading input:".red().bold(), err);
                 break;
             }
         }
@@ -313,20 +331,17 @@ pub async fn start_repl(registry: ToolRegistry, resume: ResumeTarget) -> Result<
 }
 
 fn build_repl_editor(skill_manager: Option<&SkillManager>) -> Result<ReplEditor> {
-    let config = Config::builder()
-        .completion_type(CompletionType::List)
-        .build();
-    let commands = build_slash_commands(skill_manager)?;
-    let mut rl = Editor::with_config(config)?;
-    rl.set_helper(Some(ReplHelper::new(commands)));
-    Ok(rl)
+    Ok(ReplEditor {
+        slash_commands: build_slash_commands(skill_manager)?,
+        theme: InputTheme::ocean()
+            .with_background_color(TerminalColor::Ansi256(236))
+            .with_suggestion_background_color(TerminalColor::Ansi256(238))
+            .with_selected_background_color(TerminalColor::Ansi256(31)),
+    })
 }
 
-fn refresh_repl_commands(
-    rl: &mut ReplEditor,
-    skill_manager: Option<&SkillManager>,
-) -> Vec<ReplCommandSpec> {
-    let commands = match build_slash_commands(skill_manager) {
+fn refresh_repl_commands(rl: &mut ReplEditor, skill_manager: Option<&SkillManager>) {
+    rl.slash_commands = match build_slash_commands(skill_manager) {
         Ok(commands) => commands,
         Err(err) => {
             eprintln!(
@@ -337,47 +352,368 @@ fn refresh_repl_commands(
             build_slash_commands(None).unwrap_or_default()
         }
     };
-
-    if let Some(helper) = rl.helper_mut() {
-        helper.set_commands(commands.clone());
-    }
-    commands
 }
 
-fn show_slash_command_picker(
-    rl: &mut ReplEditor,
-    commands: &[ReplCommandSpec],
-) -> Result<Option<String>> {
-    println!("\n{}", "📖 Slash commands:".cyan().bold());
-    println!(
-        "{}",
-        "Type a number to prefill the command, or press Enter to cancel.".dimmed()
-    );
-    for (index, command) in commands.iter().enumerate() {
-        println!(
-            "  {:>2}. {:<24} {}",
-            index + 1,
-            command.usage,
-            command.summary
-        );
-    }
-    println!();
-
-    let input = rl.readline(&format!("{} ", "Select command number >".cyan().bold()))?;
-    let input = input.trim();
-    if input.is_empty() {
-        println!("{}", "Slash picker cancelled".yellow());
-        return Ok(None);
+impl ReplEditor {
+    fn read_main_input(&mut self, header_lines: &[String]) -> Result<PromptSignal> {
+        let options = self
+            .slash_commands
+            .iter()
+            .map(|command| {
+                let description = if command.takes_args {
+                    format!("{}  {}", command.usage, command.summary)
+                } else {
+                    command.summary.clone()
+                };
+                InputOption::new(command.name.clone(), description)
+            })
+            .collect::<Vec<_>>();
+        self.run_input_session(
+            header_lines,
+            None,
+            &options,
+            SuggestionBehavior::KeepEditing,
+        )
     }
 
-    let index = input
-        .parse::<usize>()
-        .context("please enter a valid command number")?;
-    if index == 0 || index > commands.len() {
-        anyhow::bail!("command number out of range");
+    fn read_line_with_initial(&mut self, title: &str, initial: &str) -> Result<String> {
+        let header_lines = vec![title.to_string()];
+        match self.run_input_session(
+            &header_lines,
+            Some(initial),
+            &[],
+            SuggestionBehavior::KeepEditing,
+        )? {
+            PromptSignal::Submitted(value) => Ok(value),
+            PromptSignal::Interrupted | PromptSignal::Eof => Ok(String::new()),
+        }
     }
 
-    Ok(Some(commands[index - 1].replacement()))
+    fn select_option(&mut self, title: &str, options: &[InputOption]) -> Result<Option<String>> {
+        let header_lines = vec![title.to_string()];
+        match self.run_input_session(
+            &header_lines,
+            Some("/"),
+            options,
+            SuggestionBehavior::ReturnImmediately,
+        )? {
+            PromptSignal::Submitted(value) => Ok(Some(trim_selection_value(&value))),
+            PromptSignal::Interrupted | PromptSignal::Eof => Ok(None),
+        }
+    }
+
+    fn run_input_session(
+        &mut self,
+        header_lines: &[String],
+        initial: Option<&str>,
+        options: &[InputOption],
+        suggestion_behavior: SuggestionBehavior,
+    ) -> Result<PromptSignal> {
+        let _terminal_mode = TerminalMode::enter()?;
+        let terminal_columns = terminal_columns();
+        let mut stdout = open_tty_writer()?;
+        let mut stdin = stdout.try_clone()?;
+        let fitted_options = fit_options_to_terminal(options, terminal_columns);
+        let mut renderer = InputRenderer::new(terminal_columns);
+        let mut input = SlashInput::new(fitted_options)
+            .with_header_lines(header_lines.iter().cloned())
+            .with_theme(self.theme.clone());
+
+        if let Some(initial) = initial.filter(|value| !value.is_empty()) {
+            input.handle_paste(initial);
+        }
+
+        renderer.render(&mut stdout, &input)?;
+
+        let outcome = loop {
+            let Some(event) = read_event(&mut stdin)? else {
+                continue;
+            };
+
+            match event {
+                AppEvent::Interrupted => break PromptSignal::Interrupted,
+                AppEvent::Eof => break PromptSignal::Eof,
+                AppEvent::Key(event) => match input.handle_key(event) {
+                    InputAction::None => {}
+                    InputAction::CopyRequested(_) => {}
+                    InputAction::PasteRequested => {
+                        if let Some(text) = read_clipboard_text() {
+                            input.handle_paste(text);
+                        }
+                    }
+                    InputAction::SuggestionApplied(value) => {
+                        if matches!(suggestion_behavior, SuggestionBehavior::ReturnImmediately) {
+                            break PromptSignal::Submitted(value);
+                        }
+                    }
+                    InputAction::Submitted(value) => break PromptSignal::Submitted(value),
+                },
+            }
+
+            renderer.render(&mut stdout, &input)?;
+        };
+
+        renderer.clear(&mut stdout)?;
+        Ok(outcome)
+    }
+}
+
+fn trim_selection_value(value: &str) -> String {
+    value.trim().trim_start_matches('/').trim_end().to_string()
+}
+
+fn read_event<R: Read>(reader: &mut R) -> io::Result<Option<AppEvent>> {
+    let byte = match read_byte(reader)? {
+        Some(byte) => byte,
+        None => return Ok(None),
+    };
+
+    let event = match byte {
+        0x04 => AppEvent::Eof,
+        0x03 => AppEvent::Interrupted,
+        0x16 => AppEvent::Key(KeyEvent::ctrl(KeyCode::Char('v'))),
+        b'\r' | b'\n' => AppEvent::Key(KeyEvent::plain(KeyCode::Enter)),
+        b'\t' => AppEvent::Key(KeyEvent::plain(KeyCode::Tab)),
+        0x7f | 0x08 => AppEvent::Key(KeyEvent::plain(KeyCode::Backspace)),
+        0x1b => match read_escape_sequence(reader)? {
+            Some(event) => AppEvent::Key(event),
+            None => return Ok(None),
+        },
+        byte if byte.is_ascii_control() => return Ok(None),
+        byte => AppEvent::Key(KeyEvent::plain(KeyCode::Char(read_char(reader, byte)?))),
+    };
+
+    Ok(Some(event))
+}
+
+fn read_escape_sequence<R: Read>(reader: &mut R) -> io::Result<Option<KeyEvent>> {
+    let Some(prefix) = read_byte(reader)? else {
+        return Ok(Some(KeyEvent::plain(KeyCode::Esc)));
+    };
+
+    let key = match prefix {
+        b'[' => read_csi_sequence(reader)?,
+        b'O' => read_ss3_sequence(reader)?,
+        _ => KeyEvent::plain(KeyCode::Esc),
+    };
+
+    Ok(Some(key))
+}
+
+fn read_csi_sequence<R: Read>(reader: &mut R) -> io::Result<KeyEvent> {
+    let Some(byte) = read_byte(reader)? else {
+        return Ok(KeyEvent::plain(KeyCode::Esc));
+    };
+
+    let key = match byte {
+        b'A' => KeyEvent::plain(KeyCode::Up),
+        b'B' => KeyEvent::plain(KeyCode::Down),
+        b'C' => KeyEvent::plain(KeyCode::Right),
+        b'D' => KeyEvent::plain(KeyCode::Left),
+        b'H' => KeyEvent::plain(KeyCode::Home),
+        b'F' => KeyEvent::plain(KeyCode::End),
+        b'1' | b'3' | b'4' | b'7' | b'8' => {
+            let Some(suffix) = read_byte(reader)? else {
+                return Ok(KeyEvent::plain(KeyCode::Esc));
+            };
+
+            match (byte, suffix) {
+                (b'1', b'~') | (b'7', b'~') => KeyEvent::plain(KeyCode::Home),
+                (b'3', b'~') => KeyEvent::plain(KeyCode::Delete),
+                (b'4', b'~') | (b'8', b'~') => KeyEvent::plain(KeyCode::End),
+                _ => KeyEvent::plain(KeyCode::Esc),
+            }
+        }
+        _ => KeyEvent::plain(KeyCode::Esc),
+    };
+
+    Ok(key)
+}
+
+fn read_ss3_sequence<R: Read>(reader: &mut R) -> io::Result<KeyEvent> {
+    let Some(byte) = read_byte(reader)? else {
+        return Ok(KeyEvent::plain(KeyCode::Esc));
+    };
+
+    let key = match byte {
+        b'H' => KeyEvent::plain(KeyCode::Home),
+        b'F' => KeyEvent::plain(KeyCode::End),
+        _ => KeyEvent::plain(KeyCode::Esc),
+    };
+
+    Ok(key)
+}
+
+fn read_byte<R: Read>(reader: &mut R) -> io::Result<Option<u8>> {
+    let mut byte = [0u8; 1];
+    match reader.read(&mut byte)? {
+        0 => Ok(None),
+        _ => Ok(Some(byte[0])),
+    }
+}
+
+fn read_char<R: Read>(reader: &mut R, first_byte: u8) -> io::Result<char> {
+    if first_byte.is_ascii() {
+        return Ok(first_byte as char);
+    }
+
+    let width = utf8_width(first_byte)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid utf-8 lead byte"))?;
+    let mut buffer = vec![0; width];
+    buffer[0] = first_byte;
+
+    if width > 1 {
+        reader.read_exact(&mut buffer[1..])?;
+    }
+
+    let text = std::str::from_utf8(&buffer)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    text.chars()
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "empty utf-8 sequence"))
+}
+
+fn utf8_width(first_byte: u8) -> Option<usize> {
+    match first_byte {
+        0x00..=0x7f => Some(1),
+        0xc2..=0xdf => Some(2),
+        0xe0..=0xef => Some(3),
+        0xf0..=0xf4 => Some(4),
+        _ => None,
+    }
+}
+
+fn terminal_columns() -> usize {
+    read_terminal_columns().unwrap_or(80)
+}
+
+fn read_terminal_columns() -> io::Result<usize> {
+    let output = run_stty_capture(["size"])?;
+    parse_terminal_columns(&output)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid terminal size"))
+}
+
+fn parse_terminal_columns(output: &str) -> Option<usize> {
+    let mut parts = output.split_whitespace();
+    let _rows = parts.next()?.parse::<usize>().ok()?;
+    let columns = parts.next()?.parse::<usize>().ok()?;
+    Some(columns.max(1))
+}
+
+fn fit_options_to_terminal(options: &[InputOption], terminal_columns: usize) -> Vec<InputOption> {
+    let max_command_width = options
+        .iter()
+        .map(|option| option.command.chars().count())
+        .max()
+        .unwrap_or(0);
+    let max_description_width = terminal_columns.saturating_sub(max_command_width + 5);
+
+    options
+        .iter()
+        .map(|option| {
+            let description = truncate_for_width(&option.description, max_description_width);
+            InputOption::new(option.command.clone(), description)
+        })
+        .collect()
+}
+
+fn truncate_for_width(text: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
+        return text.to_string();
+    }
+
+    if max_chars <= 3 {
+        return ".".repeat(max_chars);
+    }
+
+    let mut out = String::new();
+    for (index, ch) in text.chars().enumerate() {
+        if index >= max_chars - 3 {
+            break;
+        }
+        out.push(ch);
+    }
+    while out.ends_with(' ') {
+        out.pop();
+    }
+    out.push_str("...");
+    out
+}
+
+fn run_stty<I, S>(args: I) -> io::Result<()>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let tty = open_tty_reader()?;
+    let status = Command::new("stty")
+        .args(args.into_iter().map(|arg| arg.as_ref().to_string()))
+        .stdin(Stdio::from(tty))
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "stty failed with status {status}"
+        )))
+    }
+}
+
+fn run_stty_capture<I, S>(args: I) -> io::Result<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let tty = open_tty_reader()?;
+    let output = Command::new("stty")
+        .args(args.into_iter().map(|arg| arg.as_ref().to_string()))
+        .stdin(Stdio::from(tty))
+        .stdout(Stdio::piped())
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "stty failed with status {}",
+            output.status
+        )));
+    }
+
+    String::from_utf8(output.stdout)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+fn read_clipboard_text() -> Option<String> {
+    clipboard_command_candidates()
+        .into_iter()
+        .find_map(|candidate| {
+            let output = Command::new(candidate.0).args(candidate.1).output().ok()?;
+            if !output.status.success() {
+                return None;
+            }
+            let text = String::from_utf8(output.stdout).ok()?;
+            let trimmed = text.trim_end_matches(['\n', '\r']);
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        })
+}
+
+fn clipboard_command_candidates() -> Vec<(&'static str, &'static [&'static str])> {
+    vec![
+        ("pbpaste", &[]),
+        ("wl-paste", &["-n"]),
+        ("xclip", &["-o", "-selection", "clipboard"]),
+    ]
+}
+
+fn open_tty_reader() -> io::Result<File> {
+    File::open("/dev/tty")
+}
+
+fn open_tty_writer() -> io::Result<File> {
+    OpenOptions::new().read(true).write(true).open("/dev/tty")
 }
 
 fn init_session(
@@ -439,81 +775,45 @@ fn visible_message_count(messages: &[Value]) -> usize {
         .count()
 }
 
-fn print_instructions(client: &LLMClient, app_config: &AppConfig) {
-    println!("{}", "📝 Instructions:".cyan().bold());
-    println!("  - Type a message and press Enter to send");
-    if app_config.tips {
-        println!(
-            "  - Type {} or {} to exit",
-            "/exit".yellow(),
-            "/quit".yellow()
-        );
-        println!(
-            "  - Type {} to clear conversation history",
-            "/clear".yellow()
-        );
-        println!(
-            "  - Type {} to view conversation history",
-            "/history".yellow()
-        );
-        println!("  - Type {} to resume previous session", "/resume".yellow());
-        println!("  - Type {} to compact long context", "/compact".yellow());
-        println!("  - Type {} to show git diff", "/diff".yellow());
-        println!("  - Type {} to review current diff", "/review".yellow());
-        println!(
-            "  - Type {} to generate and run git commit",
-            "/commit".yellow()
-        );
-        println!("  - Type {} to list saved memories", "/memory".yellow());
-        println!(
-            "  - Type {} to list or switch output styles",
-            "/output-style".yellow()
-        );
-        println!("  - Type {} to run a web search", "/web <query>".yellow());
-        println!("  - Type {} to fetch a web page", "/fetch <url>".yellow());
-        println!(
-            "  - Type {} to start, stop, or inspect the local server",
-            "/server [status|stop|host:port]".yellow()
-        );
-        println!("  - Type {} to show or toggle plan mode", "/plan".yellow());
-        println!("  - Type {} to list available skills", "/skills".yellow());
-        println!(
-            "  - Type {} to invoke a user skill",
-            "/<skill-name>".yellow()
-        );
-        println!("  - Type {} to open config menu", "/config".yellow());
-        println!("  - Type {} to switch model", "/model".yellow());
-        println!("  - Type {} to show help", "/help".yellow());
-    } else {
-        println!(
-            "  - Tips are disabled. Use {} for all commands",
-            "/help".yellow()
-        );
-    }
-    println!();
+fn build_main_prompt_lines(
+    client: &LLMClient,
+    app_config: &AppConfig,
+    session: Option<&SessionStore>,
+) -> Vec<String> {
+    let session_line = match session {
+        Some(store) => format!(
+            "{} {}",
+            "🧾 Session:".cyan().bold(),
+            store.id.as_str().white()
+        ),
+        None => format!("{}", "🧾 Session: (not started yet)".cyan().bold()),
+    };
 
-    println!("{} {}", "🔧 Model:".cyan().bold(), client.model().white());
-    println!(
-        "{} theme={} tips={}",
-        "⚙️  UI:".cyan().bold(),
-        app_config.theme.to_string().white(),
-        if app_config.tips {
-            "on".green()
-        } else {
-            "off".red()
-        }
-    );
-    println!(
-        "{} {}",
-        "🎯 Output Style:".cyan().bold(),
-        app_config.output_style.white()
-    );
-    println!(
-        "{} {}",
-        "🌐 Endpoint:".cyan().bold(),
-        client.base_url().white()
-    );
-    println!();
+    vec![
+        session_line,
+        format!("{} {}", "🔧 Model:".cyan().bold(), client.model().white()),
+        format!(
+            "{} theme={} tips={}",
+            "⚙️  UI:".cyan().bold(),
+            app_config.theme.to_string().white(),
+            if app_config.tips {
+                "on".green()
+            } else {
+                "off".red()
+            }
+        ),
+        format!(
+            "{} {}",
+            "🎯 Output Style:".cyan().bold(),
+            app_config.output_style.white()
+        ),
+        format!(
+            "{} {}",
+            "🌐 Endpoint:".cyan().bold(),
+            client.base_url().white()
+        ),
+        String::new(),
+    ]
 }
 
 async fn handle_command(command: &str, history: &mut ConversationHistory) -> bool {
@@ -977,24 +1277,18 @@ fn handle_config_command(
     cwd: &std::path::Path,
     app_config: &mut AppConfig,
 ) -> Result<()> {
-    println!("\n{}", "⚙️ Config Menu:".cyan().bold());
-    println!("  1. Theme");
-    println!("  2. Tips");
-    println!();
-
-    let input = rl.readline(&format!(
-        "{} ",
-        "Select option (Enter to cancel) >".cyan().bold()
-    ))?;
-    let input = input.trim();
-    if input.is_empty() {
+    let options = vec![
+        InputOption::new("theme", "Configure UI theme"),
+        InputOption::new("tips", "Toggle startup tips"),
+    ];
+    let Some(input) = rl.select_option("⚙️ Config Menu", &options)? else {
         println!("{}", "Config cancelled".yellow());
         return Ok(());
-    }
+    };
 
-    match input {
-        "1" => configure_theme(rl, cwd, app_config)?,
-        "2" => configure_tips(rl, cwd, app_config)?,
+    match input.as_str() {
+        "theme" => configure_theme(rl, cwd, app_config)?,
+        "tips" => configure_tips(rl, cwd, app_config)?,
         _ => println!("{}", "Unknown config option".yellow()),
     }
 
@@ -1006,27 +1300,20 @@ fn configure_theme(
     cwd: &std::path::Path,
     app_config: &mut AppConfig,
 ) -> Result<()> {
-    println!("\n{}", "🎨 Theme:".cyan().bold());
-    println!("  1. default");
-    println!("  2. light");
-    println!("  3. dark");
-    println!("  current: {}", app_config.theme.to_string().white());
-    println!();
-
-    let input = rl.readline(&format!(
-        "{} ",
-        "Select theme (Enter to cancel) >".cyan().bold()
-    ))?;
-    let input = input.trim();
-    if input.is_empty() {
+    let options = vec![
+        InputOption::new("default", "Standard theme"),
+        InputOption::new("light", "Light terminal palette"),
+        InputOption::new("dark", "Dark terminal palette"),
+    ];
+    let Some(input) = rl.select_option("🎨 Theme", &options)? else {
         println!("{}", "Theme change cancelled".yellow());
         return Ok(());
-    }
+    };
 
-    let theme = match input {
-        "1" => Theme::Default,
-        "2" => Theme::Light,
-        "3" => Theme::Dark,
+    let theme = match input.as_str() {
+        "default" => Theme::Default,
+        "light" => Theme::Light,
+        "dark" => Theme::Dark,
         _ => {
             println!("{}", "Unknown theme option".yellow());
             return Ok(());
@@ -1049,32 +1336,18 @@ fn configure_tips(
     cwd: &std::path::Path,
     app_config: &mut AppConfig,
 ) -> Result<()> {
-    println!("\n{}", "💡 Tips:".cyan().bold());
-    println!("  1. on");
-    println!("  2. off");
-    println!(
-        "  current: {}",
-        if app_config.tips {
-            "on".green()
-        } else {
-            "off".red()
-        }
-    );
-    println!();
-
-    let input = rl.readline(&format!(
-        "{} ",
-        "Select tips mode (Enter to cancel) >".cyan().bold()
-    ))?;
-    let input = input.trim();
-    if input.is_empty() {
+    let options = vec![
+        InputOption::new("on", "Show startup tips and help lines"),
+        InputOption::new("off", "Keep startup quieter"),
+    ];
+    let Some(input) = rl.select_option("💡 Tips", &options)? else {
         println!("{}", "Tips change cancelled".yellow());
         return Ok(());
-    }
+    };
 
-    app_config.tips = match input {
-        "1" => true,
-        "2" => false,
+    app_config.tips = match input.as_str() {
+        "on" => true,
+        "off" => false,
         _ => {
             println!("{}", "Unknown tips option".yellow());
             return Ok(());
@@ -1110,38 +1383,25 @@ fn handle_resume_command(
         return Ok(());
     }
 
-    println!("\n{}", "📚 Available sessions:".cyan().bold());
-    for (index, s) in sessions.iter().enumerate() {
-        let preview =
-            session_last_user_preview(s).unwrap_or_else(|_| "(failed to load)".to_string());
-        println!(
-            "  {}. {} {}",
-            index + 1,
-            preview.white(),
-            format!("[{}]", s.id).dimmed()
-        );
-    }
-    println!();
+    let options = sessions
+        .iter()
+        .map(|session_store| {
+            let preview = session_last_user_preview(session_store)
+                .unwrap_or_else(|_| "(failed to load)".to_string());
+            InputOption::new(session_store.id.clone(), preview)
+        })
+        .collect::<Vec<_>>();
 
-    let prompt = format!(
-        "{} ",
-        "Select session number (Enter to cancel) >".cyan().bold()
-    );
-    let input = rl.readline(&prompt)?;
-    let input = input.trim();
-    if input.is_empty() {
+    let Some(selected_id) = rl.select_option("📚 Resume Session", &options)? else {
         println!("{}", "Resume cancelled".yellow());
         return Ok(());
-    }
+    };
 
-    let index = input
-        .parse::<usize>()
-        .context("please enter a valid session number")?;
-    if index == 0 || index > sessions.len() {
-        anyhow::bail!("session number out of range");
-    }
-
-    let selected = sessions[index - 1].clone();
+    let selected = sessions
+        .iter()
+        .find(|store| store.id == selected_id)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("selected session not found: {}", selected_id))?;
     let loaded_messages = selected.load_messages()?;
 
     *session = Some(selected);
@@ -1336,16 +1596,19 @@ async fn handle_commit_command(
         "Suggested commit message:".cyan().bold(),
         suggested.white()
     );
-    let confirm = rl.readline(&format!(
-        "{} ",
-        "Commit with this message? [Y/n/e] >".cyan().bold()
-    ))?;
-    let confirm = confirm.trim().to_lowercase();
+    let confirm_options = vec![
+        InputOption::new("yes", "Commit with the suggested message"),
+        InputOption::new("edit", "Edit the commit message first"),
+        InputOption::new("no", "Cancel this commit"),
+    ];
+    let confirm = rl
+        .select_option("Commit With This Message?", &confirm_options)?
+        .unwrap_or_else(|| "no".to_string());
 
     let final_message = match confirm.as_str() {
-        "" | "y" | "yes" => suggested,
-        "e" | "edit" => {
-            let edited = rl.readline(&format!("{} ", "Enter commit message >".cyan().bold()))?;
+        "yes" => suggested,
+        "edit" => {
+            let edited = rl.read_line_with_initial("Enter Commit Message", &suggested)?;
             let edited = edited.trim().to_string();
             if edited.is_empty() {
                 println!("{}", "Commit cancelled".yellow());
@@ -1374,36 +1637,23 @@ async fn select_model(rl: &mut ReplEditor, client: &mut LLMClient) -> Result<()>
         return Ok(());
     }
 
-    println!("\n{}", "📦 Available models:".cyan().bold());
-    for (index, model) in models.iter().enumerate() {
-        let current = if model == client.model() {
-            " (current)".green().to_string()
-        } else {
-            String::new()
-        };
-        println!("  {}. {}{}", index + 1, model.white(), current);
-    }
+    let options = models
+        .iter()
+        .map(|model| {
+            let description = if model == client.model() {
+                "Current model".to_string()
+            } else {
+                "Available model".to_string()
+            };
+            InputOption::new(model.clone(), description)
+        })
+        .collect::<Vec<_>>();
 
-    println!();
-    let prompt = format!(
-        "{} ",
-        "Select model number (Enter to cancel) >".cyan().bold()
-    );
-    let input = rl.readline(&prompt)?;
-    let input = input.trim();
-    if input.is_empty() {
+    let Some(model) = rl.select_option("📦 Select Model", &options)? else {
         println!("{}", "Model selection cancelled".yellow());
         return Ok(());
-    }
+    };
 
-    let index = input
-        .parse::<usize>()
-        .context("please enter a valid model number")?;
-    if index == 0 || index > models.len() {
-        anyhow::bail!("model number out of range");
-    }
-
-    let model = models[index - 1].clone();
     let path = client.persist_model_to_home(&model)?;
     *client = LLMClient::new()?;
 
@@ -1539,5 +1789,21 @@ mod tests {
     #[test]
     fn parse_slash_skill_handles_name_only() {
         assert_eq!(parse_slash_skill("/simplify"), Some(("simplify", "")));
+    }
+
+    #[test]
+    fn parse_terminal_columns_reads_stty_size_output() {
+        assert_eq!(parse_terminal_columns("24 120\n"), Some(120));
+    }
+
+    #[test]
+    fn fit_options_to_terminal_truncates_long_descriptions() {
+        let options = vec![InputOption::new(
+            "commit",
+            "/commit [title]  Generate and run git commit",
+        )];
+        let fitted = fit_options_to_terminal(&options, 30);
+        assert_eq!(fitted[0].command, "commit");
+        assert_eq!(fitted[0].description, "/commit [title]...");
     }
 }

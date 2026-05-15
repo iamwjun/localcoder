@@ -1,16 +1,9 @@
 /*!
- * REPL Slash Command Completion — S21
+ * REPL Slash Command Metadata — S21
  */
 
 use crate::skills::{Skill, SkillManager};
 use anyhow::Result;
-use rustyline::completion::{Completer, Pair};
-use rustyline::highlight::Highlighter;
-use rustyline::hint::{Hint, Hinter};
-use rustyline::line_buffer::LineBuffer;
-use rustyline::validate::Validator;
-use rustyline::{Changeset, Context, Helper};
-use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplCommandSource {
@@ -27,149 +20,6 @@ pub struct ReplCommandSpec {
     pub source: ReplCommandSource,
 }
 
-impl ReplCommandSpec {
-    pub fn replacement(&self) -> String {
-        if self.takes_args {
-            format!("{} ", self.name)
-        } else {
-            self.name.clone()
-        }
-    }
-
-    fn display(&self) -> String {
-        format!("{:<24} {}", self.usage, self.summary)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ReplHelper {
-    commands: Arc<Mutex<Vec<ReplCommandSpec>>>,
-}
-
-impl ReplHelper {
-    pub fn new(commands: Vec<ReplCommandSpec>) -> Self {
-        Self {
-            commands: Arc::new(Mutex::new(commands)),
-        }
-    }
-
-    pub fn set_commands(&mut self, commands: Vec<ReplCommandSpec>) {
-        *self.commands.lock().expect("repl command lock poisoned") = commands;
-    }
-
-    fn commands(&self) -> Vec<ReplCommandSpec> {
-        self.commands
-            .lock()
-            .expect("repl command lock poisoned")
-            .clone()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ReplHint {
-    display: String,
-    completion: Option<String>,
-}
-
-impl Hint for ReplHint {
-    fn display(&self) -> &str {
-        &self.display
-    }
-
-    fn completion(&self) -> Option<&str> {
-        self.completion.as_deref()
-    }
-}
-
-impl Completer for ReplHelper {
-    type Candidate = Pair;
-
-    fn complete(
-        &self,
-        line: &str,
-        pos: usize,
-        _ctx: &Context<'_>,
-    ) -> rustyline::Result<(usize, Vec<Self::Candidate>)> {
-        let Some(ctx) = slash_token_context(line, pos) else {
-            return Ok((0, Vec::new()));
-        };
-
-        let candidates = matching_commands(&self.commands(), ctx.prefix)
-            .into_iter()
-            .map(|spec| Pair {
-                display: spec.display(),
-                replacement: spec.replacement(),
-            })
-            .collect::<Vec<_>>();
-
-        Ok((ctx.start, candidates))
-    }
-
-    fn update(&self, line: &mut LineBuffer, start: usize, elected: &str, cl: &mut Changeset) {
-        let end = line.as_str()[start..]
-            .find(char::is_whitespace)
-            .map(|offset| start + offset)
-            .unwrap_or(line.len());
-        line.replace(start..end, elected, cl);
-    }
-}
-
-impl Hinter for ReplHelper {
-    type Hint = ReplHint;
-
-    fn hint(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> Option<Self::Hint> {
-        let ctx = slash_token_context(line, pos)?;
-        let matches = matching_commands(&self.commands(), ctx.prefix);
-        if matches.is_empty() {
-            return None;
-        }
-
-        if ctx.prefix == "/" {
-            return Some(ReplHint {
-                display: "  Tab to list commands, Enter to open picker".to_string(),
-                completion: None,
-            });
-        }
-
-        if matches.len() == 1 {
-            let command = &matches[0];
-            if ctx.prefix == command.name {
-                if command.takes_args {
-                    return Some(ReplHint {
-                        display: " ".to_string(),
-                        completion: Some(" ".to_string()),
-                    });
-                }
-                return None;
-            }
-
-            return command.name.strip_prefix(ctx.prefix).map(|rest| ReplHint {
-                display: rest.to_string(),
-                completion: Some(rest.to_string()),
-            });
-        }
-
-        Some(ReplHint {
-            display: format!("  Tab to list {} matches", matches.len()),
-            completion: None,
-        })
-    }
-}
-
-impl Helper for ReplHelper {}
-impl Highlighter for ReplHelper {}
-impl Validator for ReplHelper {}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SlashTokenContext<'a> {
-    start: usize,
-    prefix: &'a str,
-}
-
-pub fn is_bare_slash_input(input: &str) -> bool {
-    input.trim() == "/"
-}
-
 pub fn build_slash_commands(skill_manager: Option<&SkillManager>) -> Result<Vec<ReplCommandSpec>> {
     let mut commands = builtin_commands();
     let mut seen = commands
@@ -182,8 +32,7 @@ pub fn build_slash_commands(skill_manager: Option<&SkillManager>) -> Result<Vec<
         skills.sort_by(|a, b| a.name.cmp(&b.name));
         for skill in skills {
             let name = format!("/{}", skill.name);
-            let key = name.to_ascii_lowercase();
-            if seen.insert(key) {
+            if seen.insert(name.to_ascii_lowercase()) {
                 commands.push(skill_to_command(skill));
             }
         }
@@ -297,77 +146,11 @@ fn source_weight(source: ReplCommandSource) -> u8 {
     }
 }
 
-fn slash_token_context(line: &str, pos: usize) -> Option<SlashTokenContext<'_>> {
-    if pos > line.len() {
-        return None;
-    }
-
-    let start = line.find(|ch: char| !ch.is_whitespace())?;
-    if !line[start..].starts_with('/') {
-        return None;
-    }
-
-    let token_end = line[start..]
-        .find(char::is_whitespace)
-        .map(|offset| start + offset)
-        .unwrap_or(line.len());
-
-    if pos < start || pos > token_end {
-        return None;
-    }
-
-    let token = &line[start..token_end];
-    let suffix = token.strip_prefix('/')?;
-    if suffix.is_empty() {
-        return Some(SlashTokenContext {
-            start,
-            prefix: &line[start..pos],
-        });
-    }
-
-    if suffix.contains('/') || suffix.contains(':') || suffix.contains('.') {
-        return None;
-    }
-
-    if !suffix
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
-    {
-        return None;
-    }
-
-    Some(SlashTokenContext {
-        start,
-        prefix: &line[start..pos],
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
-
-    #[test]
-    fn bare_slash_input_is_detected() {
-        assert!(is_bare_slash_input("/"));
-        assert!(is_bare_slash_input("   /   "));
-        assert!(!is_bare_slash_input("/help"));
-    }
-
-    #[test]
-    fn slash_context_accepts_leading_whitespace() {
-        let ctx = slash_token_context("   /pl", 6).unwrap();
-        assert_eq!(ctx.start, 3);
-        assert_eq!(ctx.prefix, "/pl");
-    }
-
-    #[test]
-    fn slash_context_ignores_non_command_paths() {
-        assert!(slash_token_context("请解释 /tmp 目录", 17).is_none());
-        assert!(slash_token_context("/tmp/foo", 8).is_none());
-        assert!(slash_token_context("/tmp.txt", 8).is_none());
-    }
 
     #[test]
     fn matching_commands_filters_expected_candidates() {
