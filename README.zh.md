@@ -1,6 +1,6 @@
 # Localcoder
 
-> 说明：本仓库在开发过程中使用了 Claude Code 和 Codex。如果这让你感到不适，抱歉。
+![Localcoder REPL screenshot](./docs/example.png)
 
 英文版：[README.md](./README.md)
 
@@ -21,7 +21,7 @@ Localcoder 是一个基于 Rust 实现、以本地优先为主的命令行编码
 
 ## 📊 实现状态
 
-[`docs/P00-plan.md`](./docs/P00-plan.md) 中的阶段路线图大部分已经落地。当前进度：**21 个阶段中已完成 16 个**。
+[`docs/P00-plan.md`](./docs/P00-plan.md) 中的阶段路线图大部分已经落地。当前进度：**22 个阶段中已完成 17 个**。
 
 | 阶段 | 模块 | 状态 | 核心交付物 |
 |------|------|------|------|
@@ -46,6 +46,7 @@ Localcoder 是一个基于 Rust 实现、以本地优先为主的命令行编码
 | S18 | 输出样式 | ✅ | 输出样式加载和 `/output-style` |
 | S19 | LSP 集成 | ✅ | 基于语言服务器的代码导航 `Lsp` |
 | S20 | Server 模式 | ✅ | 基于 Axum 的本地 HTTP / WebSocket 服务与 `/server` |
+| S21 | REPL 斜杠命令面板 | ✅ | 内建命令与技能命令的斜杠候选提示和选择面板 |
 
 ---
 
@@ -320,7 +321,7 @@ localcoder/
 ├── README.zh.md         # 中文说明
 ├── docs/                # 路线图与分阶段实现文档
 │   ├── P00-plan.md      # 总体阶段计划
-│   └── S00-S20*.md      # 各阶段详细说明
+│   └── S00-S21*.md      # 各阶段详细说明
 ├── examples/            # 示例代码
 │   ├── basic.rs          # 基本 API 调用
 │   ├── streaming.rs      # 流式响应

@@ -1,6 +1,6 @@
 # Localcoder
 
-> Note: This repository is developed with the help of Claude Code and Codex. If that makes you uncomfortable, apologies.
+![Localcoder REPL screenshot](./docs/example.png)
 
 Chinese version: [README.zh.md](./README.zh.md)
 
@@ -21,7 +21,7 @@ Localcoder is a local-first command-line coding assistant implemented in Rust. I
 
 ## 📊 Implementation Status
 
-The staged roadmap in [`docs/P00-plan.md`](./docs/P00-plan.md) is mostly implemented. Current status: **16 / 21 stages completed**.
+The staged roadmap in [`docs/P00-plan.md`](./docs/P00-plan.md) is mostly implemented. Current status: **17 / 22 stages completed**.
 
 | Stage | Area | Status | Deliverable |
 |------|------|------|------|
@@ -46,6 +46,7 @@ The staged roadmap in [`docs/P00-plan.md`](./docs/P00-plan.md) is mostly impleme
 | S18 | Output styles | ✅ | Output style loading and `/output-style` |
 | S19 | LSP integration | ✅ | Language-server-backed code navigation via `Lsp` |
 | S20 | Server mode | ✅ | Axum-based local HTTP and WebSocket server via `/server` |
+| S21 | REPL slash menu | ✅ | Slash command suggestions and picker for built-in and skill commands |
 
 ---
 
@@ -320,7 +321,7 @@ localcoder/
 ├── README.zh.md         # Chinese documentation
 ├── docs/                # Roadmap and stage-by-stage implementation notes
 │   ├── P00-plan.md      # Overall staged plan
-│   └── S00-S20*.md      # Detailed stage documents
+│   └── S00-S21*.md      # Detailed stage documents
 ├── examples/            # Example programs
 │   ├── basic.rs          # Basic API usage
 │   ├── streaming.rs      # Streaming responses
